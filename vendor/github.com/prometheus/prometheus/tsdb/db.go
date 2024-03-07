@@ -190,6 +190,8 @@ type Options struct {
 
 	// EnableSharding enables query sharding support in TSDB.
 	EnableSharding bool
+
+	OpenBlockOptions OpenBlockOptions
 }
 
 type BlocksToDeleteFunc func(blocks []*Block) map[ulid.ULID]struct{}
@@ -240,6 +242,8 @@ type DB struct {
 	writeNotified wlog.WriteNotified
 
 	registerer prometheus.Registerer
+
+	openBlockOptions OpenBlockOptions
 }
 
 type dbMetrics struct {
@@ -568,7 +572,7 @@ func (db *DBReadOnly) Blocks() ([]BlockReader, error) {
 		return nil, ErrClosed
 	default:
 	}
-	loadable, corrupted, err := openBlocks(db.logger, db.dir, nil, nil)
+	loadable, corrupted, err := openBlocks(db.logger, OpenBlockOptions{}, db.dir, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -788,16 +792,17 @@ func open(dir string, l log.Logger, r prometheus.Registerer, opts *Options, rngs
 	}
 
 	db := &DB{
-		dir:            dir,
-		logger:         l,
-		opts:           opts,
-		compactc:       make(chan struct{}, 1),
-		donec:          make(chan struct{}),
-		stopc:          make(chan struct{}),
-		autoCompact:    true,
-		chunkPool:      chunkenc.NewPool(),
-		blocksToDelete: opts.BlocksToDelete,
-		registerer:     r,
+		dir:              dir,
+		logger:           l,
+		opts:             opts,
+		compactc:         make(chan struct{}, 1),
+		donec:            make(chan struct{}),
+		stopc:            make(chan struct{}),
+		autoCompact:      true,
+		chunkPool:        chunkenc.NewPool(),
+		blocksToDelete:   opts.BlocksToDelete,
+		openBlockOptions: opts.OpenBlockOptions,
+		registerer:       r,
 	}
 	defer func() {
 		// Close files if startup fails somewhere.
@@ -1438,7 +1443,7 @@ func (db *DB) reloadBlocks() (err error) {
 	db.mtx.Lock()
 	defer db.mtx.Unlock()
 
-	loadable, corrupted, err := openBlocks(db.logger, db.dir, db.blocks, db.chunkPool)
+	loadable, corrupted, err := openBlocks(db.logger, db.openBlockOptions, db.dir, db.blocks, db.chunkPool)
 	if err != nil {
 		return err
 	}
@@ -1530,7 +1535,7 @@ func (db *DB) reloadBlocks() (err error) {
 	return nil
 }
 
-func openBlocks(l log.Logger, dir string, loaded []*Block, chunkPool chunkenc.Pool) (blocks []*Block, corrupted map[ulid.ULID]error, err error) {
+func openBlocks(l log.Logger, openBlockOptions OpenBlockOptions, dir string, loaded []*Block, chunkPool chunkenc.Pool) (blocks []*Block, corrupted map[ulid.ULID]error, err error) {
 	bDirs, err := blockDirs(dir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("find blocks: %w", err)
@@ -1547,7 +1552,7 @@ func openBlocks(l log.Logger, dir string, loaded []*Block, chunkPool chunkenc.Po
 		// See if we already have the block in memory or open it otherwise.
 		block, open := getBlock(loaded, meta.ULID)
 		if !open {
-			block, err = OpenBlock(l, bDir, chunkPool)
+			block, err = OpenBlockWithOptions(l, bDir, chunkPool, openBlockOptions)
 			if err != nil {
 				corrupted[meta.ULID] = err
 				continue

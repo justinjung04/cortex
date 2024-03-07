@@ -133,7 +133,15 @@ func (q *blockQuerier) Select(ctx context.Context, sortSeries bool, hints *stora
 	disableTrimming := false
 	sharded := hints != nil && hints.ShardCount > 0
 
-	p, err := PostingsForMatchers(ctx, q.index, ms...)
+	var p index.Postings
+	var err error
+
+	if i, ok := q.index.(ExtendedIndexReader); ok {
+		p, err = i.PostingsForMatchers(ctx, ms...)
+	} else {
+		p, err = PostingsForMatchers(ctx, q.index, ms...)
+	}
+
 	if err != nil {
 		return storage.ErrSeriesSet(err)
 	}

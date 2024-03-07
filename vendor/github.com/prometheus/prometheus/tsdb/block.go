@@ -107,6 +107,17 @@ type IndexReader interface {
 	Close() error
 }
 
+type ExtendedIndexReader interface {
+	IndexReader
+	PostingsForMatchers(ctx context.Context, ms ...*labels.Matcher) (index.Postings, error)
+}
+
+type IndexReaderWrapFunc func(reader *index.Reader) IndexReader
+
+type OpenBlockOptions struct {
+	IndexReaderWrapFunc IndexReaderWrapFunc
+}
+
 // ChunkWriter serializes a time block of chunked series data.
 type ChunkWriter interface {
 	// WriteChunks writes several chunks. The Chunk field of the ChunkMetas
@@ -326,8 +337,17 @@ type Block struct {
 // OpenBlock opens the block in the directory. It can be passed a chunk pool, which is used
 // to instantiate chunk structs.
 func OpenBlock(logger log.Logger, dir string, pool chunkenc.Pool) (pb *Block, err error) {
+	return OpenBlockWithOptions(logger, dir, pool, OpenBlockOptions{})
+}
+
+func OpenBlockWithOptions(logger log.Logger, dir string, pool chunkenc.Pool, ops OpenBlockOptions) (pb *Block, err error) {
 	if logger == nil {
 		logger = log.NewNopLogger()
+	}
+	if ops.IndexReaderWrapFunc == nil {
+		ops.IndexReaderWrapFunc = func(reader *index.Reader) IndexReader {
+			return reader
+		}
 	}
 	var closers []io.Closer
 	defer func() {
@@ -362,7 +382,7 @@ func OpenBlock(logger log.Logger, dir string, pool chunkenc.Pool) (pb *Block, er
 		dir:               dir,
 		meta:              *meta,
 		chunkr:            cr,
-		indexr:            ir,
+		indexr:            ops.IndexReaderWrapFunc(ir),
 		tombstones:        tr,
 		symbolTableSize:   ir.SymbolTableSize(),
 		logger:            logger,
