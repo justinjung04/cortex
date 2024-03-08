@@ -196,7 +196,7 @@ func (q *blockChunkQuerier) Select(ctx context.Context, sortSeries bool, hints *
 
 	if i, ok := q.index.(ExtendedIndexReader); ok {
 		p, err = i.PostingsForMatchers(ctx, ms...)
-		} else {
+	} else {
 		p, err = PostingsForMatchers(ctx, q.index, ms...)
 	}
 
