@@ -27,7 +27,7 @@ type CachedIndexReader struct {
 func NewCachedIndexReader(ir tsdb.IndexReader) *CachedIndexReader {
 	return &CachedIndexReader{
 		IndexReader: ir,
-		cache:       NewPostingsForMatchersCache(time.Minute, 100, 1000, false),
+		cache:       NewPostingsForMatchersCache(10*time.Minute, 100, 10*1024*1024, false),
 	}
 }
 
@@ -172,7 +172,7 @@ func (c *PostingsForMatchersCache) postingsForMatchersPromise(ctx context.Contex
 		promise.cloner = NewPostingsCloner(postings)
 	}
 
-	sizeBytes := int64(len(key)) // + size.Of(promise))
+	sizeBytes := int64(len(key)) + int64(len(promise.cloner.ids))
 
 	c.created(ctx, key, c.timeNow(), sizeBytes)
 	return promise.result
