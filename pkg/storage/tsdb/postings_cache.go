@@ -12,10 +12,6 @@ import (
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb"
 	"github.com/prometheus/prometheus/tsdb/index"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 )
 
 type CachedIndexReader struct {
@@ -50,10 +46,6 @@ func NewPostingsForMatchersCache(ttl time.Duration, maxItems int, maxBytes int64
 
 		timeNow:             time.Now,
 		postingsForMatchers: tsdb.PostingsForMatchers,
-
-		tracer:      otel.Tracer(""),
-		ttlAttrib:   attribute.Stringer("ttl", ttl),
-		forceAttrib: attribute.Bool("force", force),
 	}
 
 	return b
@@ -76,40 +68,15 @@ type PostingsForMatchersCache struct {
 	timeNow func() time.Time
 	// postingsForMatchers can be replaced for testing purposes
 	postingsForMatchers func(ctx context.Context, ix tsdb.IndexReader, ms ...*labels.Matcher) (index.Postings, error)
-
-	tracer trace.Tracer
-	// Preallocated for performance
-	ttlAttrib   attribute.KeyValue
-	forceAttrib attribute.KeyValue
 }
 
 func (c *PostingsForMatchersCache) PostingsForMatchers(ctx context.Context, ix tsdb.IndexReader, concurrent bool, ms ...*labels.Matcher) (index.Postings, error) {
-	span := trace.SpanFromContext(ctx)
-	defer func(startTime time.Time) {
-		span.AddEvent(
-			"PostingsForMatchers returned",
-			trace.WithAttributes(attribute.Bool("concurrent", concurrent), c.ttlAttrib, c.forceAttrib, attribute.Stringer("duration", time.Since(startTime))),
-		)
-	}(time.Now())
-
 	if !concurrent && !c.force {
-		span.AddEvent("cache not used")
-		p, err := c.postingsForMatchers(ctx, ix, ms...)
-		if err != nil {
-			span.SetStatus(codes.Error, "getting postings for matchers without cache failed")
-			span.RecordError(err)
-		}
-		return p, err
+		return c.postingsForMatchers(ctx, ix, ms...)
 	}
 
-	span.AddEvent("using cache")
 	c.expire()
-	p, err := c.postingsForMatchersPromise(ctx, ix, ms)(ctx)
-	if err != nil {
-		span.SetStatus(codes.Error, "getting postings for matchers with cache failed")
-		span.RecordError(err)
-	}
-	return p, err
+	return c.postingsForMatchersPromise(ctx, ix, ms...)(ctx)
 }
 
 type postingsForMatcherPromise struct {
@@ -136,28 +103,20 @@ func (p *postingsForMatcherPromise) result(ctx context.Context) (index.Postings,
 	}
 }
 
-func (c *PostingsForMatchersCache) postingsForMatchersPromise(ctx context.Context, ix tsdb.IndexReader, ms []*labels.Matcher) func(context.Context) (index.Postings, error) {
-
-	span := trace.SpanFromContext(ctx)
-
+func (c *PostingsForMatchersCache) postingsForMatchersPromise(_ context.Context, ix tsdb.IndexReader, ms ...*labels.Matcher) func(context.Context) (index.Postings, error) {
 	promise := &postingsForMatcherPromise{
 		done: make(chan struct{}),
 	}
 
-	key := matchersKey(ms)
+	key := matchersKey(ms...)
 	oldPromise, loaded := c.calls.LoadOrStore(key, promise)
 	if loaded {
 		// promise was not stored, we return a previously stored promise, that's possibly being fulfilled in another goroutine
-		span.AddEvent("using cached postingsForMatchers promise", trace.WithAttributes(
-			attribute.String("cache_key", key),
-		))
 		close(promise.done)
 		return func(ctx context.Context) (index.Postings, error) {
 			return oldPromise.(*postingsForMatcherPromise).result(ctx)
 		}
 	}
-
-	span.AddEvent("no postingsForMatchers promise in cache, executing query", trace.WithAttributes(attribute.String("cache_key", key)))
 
 	// promise was stored, close its channel after fulfilment
 	defer close(promise.done)
@@ -172,16 +131,16 @@ func (c *PostingsForMatchersCache) postingsForMatchersPromise(ctx context.Contex
 		promise.cloner = NewPostingsCloner(postings)
 	}
 
-	sizeBytes := int64(len(key)) + int64(len(promise.cloner.ids))
+	sizeBytes := int64(len(key)) + int64(len(promise.cloner.ids) * 8)
 
-	c.created(ctx, key, c.timeNow(), sizeBytes)
+	c.created(key, c.timeNow(), sizeBytes)
 	return promise.result
 }
 
 // matchersKey provides a unique string key for the given matchers slice.
 // NOTE: different orders of matchers will produce different keys,
 // but it's unlikely that we'll receive same matchers in different orders at the same time.
-func matchersKey(ms []*labels.Matcher) string {
+func matchersKey(ms ...*labels.Matcher) string {
 	const (
 		typeLen = 2
 		sepLen  = 1
@@ -257,11 +216,8 @@ func (c *PostingsForMatchersCache) evictHead() {
 
 // created has to be called when returning from the PostingsForMatchers call that creates the promise.
 // the ts provided should be the call time.
-func (c *PostingsForMatchersCache) created(ctx context.Context, key string, ts time.Time, sizeBytes int64) {
-	span := trace.SpanFromContext(ctx)
-
+func (c *PostingsForMatchersCache) created(key string, ts time.Time, sizeBytes int64) {
 	if c.ttl <= 0 {
-		span.AddEvent("deleting cached promise since c.ttl <= 0")
 		c.calls.Delete(key)
 		return
 	}
@@ -275,11 +231,6 @@ func (c *PostingsForMatchersCache) created(ctx context.Context, key string, ts t
 		sizeBytes: sizeBytes,
 	})
 	c.cachedBytes += sizeBytes
-	span.AddEvent("added cached value to expiry queue", trace.WithAttributes(
-		attribute.Stringer("timestamp", ts),
-		attribute.Int64("size in bytes", sizeBytes),
-		attribute.Int64("cached bytes", c.cachedBytes),
-	))
 }
 
 // PostingsCloner takes an existing Postings and allows independently clone them.
