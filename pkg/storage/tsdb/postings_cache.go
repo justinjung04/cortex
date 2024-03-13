@@ -24,10 +24,10 @@ type CachedIndexReader struct {
 	cache *PostingsForMatchersCache
 }
 
-func NewCachedIndexReader(ir tsdb.IndexReader) *CachedIndexReader {
+func NewCachedIndexReader(ir tsdb.IndexReader, ttl time.Duration, maxItems int, maxBytes int64) *CachedIndexReader {
 	return &CachedIndexReader{
 		IndexReader: ir,
-		cache:       NewPostingsForMatchersCache(10*time.Minute, 100, 10*1024*1024, false),
+		cache:       NewPostingsForMatchersCache(ttl, maxItems, maxBytes, false),
 	}
 }
 
