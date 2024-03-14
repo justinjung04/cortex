@@ -22,10 +22,10 @@ type CachedIndexReader struct {
 	cache *PostingsForMatchersCache
 }
 
-func NewCachedIndexReader(ir tsdb.IndexReader, ttl time.Duration, maxItems int, maxBytes int64, enabled bool) *CachedIndexReader {
+func NewCachedIndexReader(ir tsdb.IndexReader, ttl time.Duration, maxItems int, maxBytes int64, _ bool) *CachedIndexReader {
 	return &CachedIndexReader{
 		IndexReader: ir,
-		cache:       NewPostingsForMatchersCache(ttl, maxItems, maxBytes, enabled, prometheus.NewRegistry()),
+		cache:       NewPostingsForMatchersCache(ttl, maxItems, maxBytes, true, prometheus.DefaultRegisterer),
 	}
 }
 
