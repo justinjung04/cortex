@@ -2923,6 +2923,19 @@ instance_limits:
 # Customize the message contained in limit errors
 # CLI flag: -ingester.admin-limit-message
 [admin_limit_message: <string> | default = "please contact administrator to raise it"]
+
+index_cache:
+  # Max bytes of index cache entries.
+  # CLI flag: -ingester.index-cache.max-bytes
+  [max_bytes: <int> | default = 10485760]
+
+  # Max number of index cache entries.
+  # CLI flag: -ingester.index-cache.max-items
+  [max_items: <int> | default = 100]
+
+  # TTL of index cache entries.
+  # CLI flag: -ingester.index-cache.ttl
+  [ttl: <duration> | default = 10m]
 ```
 
 ### `ingester_client_config`
