@@ -37,7 +37,7 @@ type ingesterMetrics struct {
 	memMetadataCreatedTotal *prometheus.CounterVec
 	memSeriesRemovedTotal   *prometheus.CounterVec
 	memMetadataRemovedTotal *prometheus.CounterVec
-	postingsCacheMetrics    tsdb.PostingsCacheMetrics
+	postingsCacheMetrics    *tsdb.PostingsCacheMetrics
 
 	activeSeriesPerUser *prometheus.GaugeVec
 
@@ -224,10 +224,19 @@ func newIngesterMetrics(r prometheus.Registerer, createMetricsConflictingWithTSD
 		r.MustRegister(m.activeSeriesPerUser)
 	}
 
-	if postingsCacheEnabled && r != nil {
-		r.MustRegister(m.postingsCacheMetrics.CacheRequests)
-		r.MustRegister(m.postingsCacheMetrics.CacheHits)
-		r.MustRegister(m.postingsCacheMetrics.CacheEvicts)
+	if postingsCacheEnabled {
+		m.postingsCacheMetrics.CacheRequest = promauto.With(r).NewCounter(prometheus.CounterOpts{
+			Name: "cortex_ingester_postings_cache_requests",
+			Help: "Count of cache adds in the ingester postings cache.",
+		})
+		m.postingsCacheMetrics.CacheHits = promauto.With(r).NewCounter(prometheus.CounterOpts{
+			Name: "cortex_ingester_postings_cache_hits",
+			Help: "Count of cache hits in the ingester postings cache.",
+		})
+		m.postingsCacheMetrics.CacheEvicts = promauto.With(r).NewCounter(prometheus.CounterOpts{
+			Name: "cortex_ingester_postings_cache_evicts",
+			Help: "Count of cache evictions in the ingester postings cache, excluding items that got evicted due to TTL.",
+		})
 	}
 
 	if createMetricsConflictingWithTSDB {

@@ -19,6 +19,7 @@ type PostingsCacheMetrics struct {
 	CacheRequests prometheus.Counter
 	CacheHits     prometheus.Counter
 	CacheEvicts   prometheus.Counter
+	Enabled       bool
 }
 
 type CachedIndexReader struct {
@@ -27,7 +28,7 @@ type CachedIndexReader struct {
 	cache *PostingsForMatchersCache
 }
 
-func NewCachedIndexReader(ir tsdb.IndexReader, ttl time.Duration, maxItems int, maxBytes int64, metrics PostingsCacheMetrics) *CachedIndexReader {
+func NewCachedIndexReader(ir tsdb.IndexReader, ttl time.Duration, maxItems int, maxBytes int64, metrics *PostingsCacheMetrics) *CachedIndexReader {
 	return &CachedIndexReader{
 		IndexReader: ir,
 		cache:       NewPostingsForMatchersCache(ttl, maxItems, maxBytes, metrics),
@@ -40,8 +41,8 @@ func (c *CachedIndexReader) PostingsForMatchers(ctx context.Context, ms ...*labe
 
 // NewPostingsForMatchersCache creates a new PostingsForMatchersCache.
 // If `ttl` is 0, then it only deduplicates in-flight requests.
-func NewPostingsForMatchersCache(ttl time.Duration, maxItems int, maxBytes int64, metrics PostingsCacheMetrics) *PostingsForMatchersCache {
-	b := &PostingsForMatchersCache{
+func NewPostingsForMatchersCache(ttl time.Duration, maxItems int, maxBytes int64, metrics *PostingsCacheMetrics) *PostingsForMatchersCache {
+	return &PostingsForMatchersCache{
 		calls:  &sync.Map{},
 		cached: list.New(),
 
@@ -54,8 +55,6 @@ func NewPostingsForMatchersCache(ttl time.Duration, maxItems int, maxBytes int64
 
 		metrics: metrics,
 	}
-
-	return b
 }
 
 // PostingsForMatchersCache caches PostingsForMatchers call results when the concurrent hint is passed in or force is true.
@@ -75,7 +74,7 @@ type PostingsForMatchersCache struct {
 	// postingsForMatchers can be replaced for testing purposes
 	postingsForMatchers func(ctx context.Context, ix tsdb.IndexReader, ms ...*labels.Matcher) (index.Postings, error)
 
-	metrics PostingsCacheMetrics
+	metrics *PostingsCacheMetrics
 }
 
 func (c *PostingsForMatchersCache) PostingsForMatchers(ctx context.Context, ix tsdb.IndexReader, ms ...*labels.Matcher) (index.Postings, error) {
