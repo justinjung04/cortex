@@ -128,13 +128,14 @@ type Config struct {
 	// For admin contact details
 	AdminLimitMessage string `yaml:"admin_limit_message"`
 
-	IndexCache IndexCacheLimits `yaml:"index_cache"`
+	PostingsCache PostingsCacheConfig `yaml:"postings_cache"`
 }
 
-type IndexCacheLimits struct {
+type PostingsCacheConfig struct {
 	MaxBytes int64         `yaml:"max_bytes"`
 	MaxItems int           `yaml:"max_items"`
 	Ttl      time.Duration `yaml:"ttl"`
+	Enabled  bool          `yaml:"enabled"`
 }
 
 // RegisterFlags adds the flags required to config this to the given FlagSet
@@ -158,9 +159,10 @@ func (cfg *Config) RegisterFlags(f *flag.FlagSet) {
 
 	f.StringVar(&cfg.AdminLimitMessage, "ingester.admin-limit-message", "please contact administrator to raise it", "Customize the message contained in limit errors")
 
-	f.DurationVar(&cfg.IndexCache.Ttl, "ingester.index-cache.ttl", 10*time.Minute, "TTL of index cache entries.")
-	f.IntVar(&cfg.IndexCache.MaxItems, "ingester.index-cache.max-items", 100, "Max number of index cache entries.")
-	f.Int64Var(&cfg.IndexCache.MaxBytes, "ingester.index-cache.max-bytes", 10*1024*1024, "Max bytes of index cache entries.")
+	f.DurationVar(&cfg.PostingsCache.Ttl, "ingester.postings-cache.ttl", 10*time.Minute, "TTL of postings cache entries")
+	f.IntVar(&cfg.PostingsCache.MaxItems, "ingester.postings-cache.max-items", 100, "Max number of postings cache entries")
+	f.Int64Var(&cfg.PostingsCache.MaxBytes, "ingester.postings-cache.max-bytes", 10*1024*1024, "Max bytes of postings cache entries")
+	f.BoolVar(&cfg.PostingsCache.Enabled, "ingester.postings-cache.enabled", false, "Whether postings cache is enabled")
 }
 
 func (cfg *Config) getIgnoreSeriesLimitForMetricNamesMap() map[string]struct{} {
@@ -2013,7 +2015,7 @@ func (i *Ingester) createTSDB(userID string) (*userTSDB, error) {
 		EnableOverlappingCompaction:    false, // Always let compactors handle overlapped blocks, e.g. OOO blocks.
 		OpenBlockOptions: tsdb.OpenBlockOptions{
 			IndexReaderWrapFunc: func(r *index.Reader) tsdb.IndexReader {
-				return cortex_tsdb.NewCachedIndexReader(r, i.cfg.IndexCache.Ttl, i.cfg.IndexCache.MaxItems, i.cfg.IndexCache.MaxBytes, true)
+				return cortex_tsdb.NewCachedIndexReader(r, i.cfg.PostingsCache.Ttl, i.cfg.PostingsCache.MaxItems, i.cfg.PostingsCache.MaxBytes, i.cfg.PostingsCache.Enabled)
 			},
 		},
 	}, nil)

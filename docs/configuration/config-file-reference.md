@@ -2924,18 +2924,22 @@ instance_limits:
 # CLI flag: -ingester.admin-limit-message
 [admin_limit_message: <string> | default = "please contact administrator to raise it"]
 
-index_cache:
-  # Max bytes of index cache entries.
-  # CLI flag: -ingester.index-cache.max-bytes
+postings_cache:
+  # Max bytes of postings cache entries
+  # CLI flag: -ingester.postings-cache.max-bytes
   [max_bytes: <int> | default = 10485760]
 
-  # Max number of index cache entries.
-  # CLI flag: -ingester.index-cache.max-items
+  # Max number of postings cache entries
+  # CLI flag: -ingester.postings-cache.max-items
   [max_items: <int> | default = 100]
 
-  # TTL of index cache entries.
-  # CLI flag: -ingester.index-cache.ttl
+  # TTL of postings cache entries
+  # CLI flag: -ingester.postings-cache.ttl
   [ttl: <duration> | default = 10m]
+
+  # Whether postings cache is enabled
+  # CLI flag: -ingester.postings-cache.enabled
+  [enabled: <boolean> | default = false]
 ```
 
 ### `ingester_client_config`
