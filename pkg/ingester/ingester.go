@@ -2013,7 +2013,7 @@ func (i *Ingester) createTSDB(userID string) (*userTSDB, error) {
 		EnableOverlappingCompaction:    false, // Always let compactors handle overlapped blocks, e.g. OOO blocks.
 		OpenBlockOptions: tsdb.OpenBlockOptions{
 			IndexReaderWrapFunc: func(r *index.Reader) tsdb.IndexReader {
-				return cortex_tsdb.NewCachedIndexReader(r, i.cfg.IndexCache.Ttl, i.cfg.IndexCache.MaxItems, i.cfg.IndexCache.MaxBytes)
+				return cortex_tsdb.NewCachedIndexReader(r, i.cfg.IndexCache.Ttl, i.cfg.IndexCache.MaxItems, i.cfg.IndexCache.MaxBytes, true)
 			},
 		},
 	}, nil)

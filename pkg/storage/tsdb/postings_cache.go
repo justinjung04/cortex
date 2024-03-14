@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb"
@@ -20,21 +22,20 @@ type CachedIndexReader struct {
 	cache *PostingsForMatchersCache
 }
 
-func NewCachedIndexReader(ir tsdb.IndexReader, ttl time.Duration, maxItems int, maxBytes int64) *CachedIndexReader {
+func NewCachedIndexReader(ir tsdb.IndexReader, ttl time.Duration, maxItems int, maxBytes int64, enabled bool) *CachedIndexReader {
 	return &CachedIndexReader{
 		IndexReader: ir,
-		cache:       NewPostingsForMatchersCache(ttl, maxItems, maxBytes, false),
+		cache:       NewPostingsForMatchersCache(ttl, maxItems, maxBytes, enabled, prometheus.NewRegistry()),
 	}
 }
 
 func (c *CachedIndexReader) PostingsForMatchers(ctx context.Context, ms ...*labels.Matcher) (index.Postings, error) {
-	return c.cache.PostingsForMatchers(ctx, c, true, ms...)
+	return c.cache.PostingsForMatchers(ctx, c, ms...)
 }
 
 // NewPostingsForMatchersCache creates a new PostingsForMatchersCache.
 // If `ttl` is 0, then it only deduplicates in-flight requests.
-// If `force` is true, then all requests go through cache, regardless of the `concurrent` param provided to the PostingsForMatchers method.
-func NewPostingsForMatchersCache(ttl time.Duration, maxItems int, maxBytes int64, force bool) *PostingsForMatchersCache {
+func NewPostingsForMatchersCache(ttl time.Duration, maxItems int, maxBytes int64, enabled bool, reg prometheus.Registerer) *PostingsForMatchersCache {
 	b := &PostingsForMatchersCache{
 		calls:  &sync.Map{},
 		cached: list.New(),
@@ -42,10 +43,23 @@ func NewPostingsForMatchersCache(ttl time.Duration, maxItems int, maxBytes int64
 		ttl:      ttl,
 		maxItems: maxItems,
 		maxBytes: maxBytes,
-		force:    force,
+		enabled:  enabled,
 
 		timeNow:             time.Now,
 		postingsForMatchers: tsdb.PostingsForMatchers,
+
+		cacheRequests: promauto.With(reg).NewCounter(prometheus.CounterOpts{
+			Name: "cortex_ingester_postings_cache_requests",
+			Help: "Count of cache adds in the ingester postings cache.",
+		}),
+		cacheHits: promauto.With(reg).NewCounter(prometheus.CounterOpts{
+			Name: "cortex_ingester_postings_cache_hits",
+			Help: "Count of cache hits in the ingester postings cache.",
+		}),
+		cacheEvictions: promauto.With(reg).NewCounter(prometheus.CounterOpts{
+			Name: "cortex_ingester_postings_cache_evictions",
+			Help: "Count of cache evictions in the ingester postings cache, excluding items that got evicted due to TTL.",
+		}),
 	}
 
 	return b
@@ -62,16 +76,20 @@ type PostingsForMatchersCache struct {
 	ttl      time.Duration
 	maxItems int
 	maxBytes int64
-	force    bool
+	enabled  bool
 
 	// timeNow is the time.Now that can be replaced for testing purposes
 	timeNow func() time.Time
 	// postingsForMatchers can be replaced for testing purposes
 	postingsForMatchers func(ctx context.Context, ix tsdb.IndexReader, ms ...*labels.Matcher) (index.Postings, error)
+
+	cacheRequests  prometheus.Counter
+	cacheHits      prometheus.Counter
+	cacheEvictions prometheus.Counter
 }
 
-func (c *PostingsForMatchersCache) PostingsForMatchers(ctx context.Context, ix tsdb.IndexReader, concurrent bool, ms ...*labels.Matcher) (index.Postings, error) {
-	if !concurrent && !c.force {
+func (c *PostingsForMatchersCache) PostingsForMatchers(ctx context.Context, ix tsdb.IndexReader, ms ...*labels.Matcher) (index.Postings, error) {
+	if !c.enabled {
 		return c.postingsForMatchers(ctx, ix, ms...)
 	}
 
@@ -108,10 +126,12 @@ func (c *PostingsForMatchersCache) postingsForMatchersPromise(_ context.Context,
 		done: make(chan struct{}),
 	}
 
+	c.cacheRequests.Inc()
 	key := matchersKey(ms...)
 	oldPromise, loaded := c.calls.LoadOrStore(key, promise)
 	if loaded {
 		// promise was not stored, we return a previously stored promise, that's possibly being fulfilled in another goroutine
+		c.cacheHits.Inc()
 		close(promise.done)
 		return func(ctx context.Context) (index.Postings, error) {
 			return oldPromise.(*postingsForMatcherPromise).result(ctx)
@@ -131,7 +151,7 @@ func (c *PostingsForMatchersCache) postingsForMatchersPromise(_ context.Context,
 		promise.cloner = NewPostingsCloner(postings)
 	}
 
-	sizeBytes := int64(len(key)) + int64(len(promise.cloner.ids) * 8)
+	sizeBytes := int64(len(key)) + int64(len(promise.cloner.ids)*8)
 
 	c.created(key, c.timeNow(), sizeBytes)
 	return promise.result
@@ -195,6 +215,7 @@ func (c *PostingsForMatchersCache) expire() {
 func (c *PostingsForMatchersCache) shouldEvictHead() bool {
 	// The cache should be evicted for sure if the max size (either items or bytes) is reached.
 	if c.cached.Len() > c.maxItems || c.cachedBytes > c.maxBytes {
+		c.cacheEvictions.Inc()
 		return true
 	}
 
