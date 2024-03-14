@@ -160,7 +160,7 @@ func (cfg *Config) RegisterFlags(f *flag.FlagSet) {
 	f.StringVar(&cfg.AdminLimitMessage, "ingester.admin-limit-message", "please contact administrator to raise it", "Customize the message contained in limit errors")
 
 	f.DurationVar(&cfg.PostingsCache.Ttl, "ingester.postings-cache.ttl", 10*time.Minute, "TTL of postings cache entries")
-	f.IntVar(&cfg.PostingsCache.MaxItems, "ingester.postings-cache.max-items", 100, "Max number of postings cache entries")
+	f.IntVar(&cfg.PostingsCache.MaxItems, "ingester.postings-cache.max-items", 10000, "Max number of postings cache entries")
 	f.Int64Var(&cfg.PostingsCache.MaxBytes, "ingester.postings-cache.max-bytes", 10*1024*1024, "Max bytes of postings cache entries")
 	f.BoolVar(&cfg.PostingsCache.Enabled, "ingester.postings-cache.enabled", false, "Whether postings cache is enabled")
 }
@@ -641,7 +641,7 @@ func New(cfg Config, limits *validation.Overrides, registerer prometheus.Registe
 		logger:        logger,
 		ingestionRate: util_math.NewEWMARate(0.2, instanceIngestionRateTickInterval),
 	}
-	i.metrics = newIngesterMetrics(registerer, false, cfg.ActiveSeriesMetricsEnabled, i.getInstanceLimits, i.ingestionRate, &i.inflightPushRequests)
+	i.metrics = newIngesterMetrics(registerer, false, cfg.ActiveSeriesMetricsEnabled, i.getInstanceLimits, i.ingestionRate, &i.inflightPushRequests, cfg.PostingsCache.Enabled)
 
 	// Replace specific metrics which we can't directly track but we need to read
 	// them from the underlying system (ie. TSDB).
@@ -706,7 +706,7 @@ func NewForFlusher(cfg Config, limits *validation.Overrides, registerer promethe
 		TSDBState: newTSDBState(bucketClient, registerer),
 		logger:    logger,
 	}
-	i.metrics = newIngesterMetrics(registerer, false, false, i.getInstanceLimits, nil, &i.inflightPushRequests)
+	i.metrics = newIngesterMetrics(registerer, false, false, i.getInstanceLimits, nil, &i.inflightPushRequests, false)
 
 	i.TSDBState.shipperIngesterID = "flusher"
 
@@ -2015,7 +2015,10 @@ func (i *Ingester) createTSDB(userID string) (*userTSDB, error) {
 		EnableOverlappingCompaction:    false, // Always let compactors handle overlapped blocks, e.g. OOO blocks.
 		OpenBlockOptions: tsdb.OpenBlockOptions{
 			IndexReaderWrapFunc: func(r *index.Reader) tsdb.IndexReader {
-				return cortex_tsdb.NewCachedIndexReader(r, i.cfg.PostingsCache.Ttl, i.cfg.PostingsCache.MaxItems, i.cfg.PostingsCache.MaxBytes, i.cfg.PostingsCache.Enabled)
+				if i.cfg.PostingsCache.Enabled {
+					return cortex_tsdb.NewCachedIndexReader(r, i.cfg.PostingsCache.Ttl, i.cfg.PostingsCache.MaxItems, i.cfg.PostingsCache.MaxBytes, i.metrics.postingsCacheMetrics)
+				}
+				return r
 			},
 		},
 	}, nil)

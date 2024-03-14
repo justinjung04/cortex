@@ -5,6 +5,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.uber.org/atomic"
 
+	"github.com/cortexproject/cortex/pkg/storage/tsdb"
 	"github.com/cortexproject/cortex/pkg/util"
 	util_math "github.com/cortexproject/cortex/pkg/util/math"
 )
@@ -36,6 +37,7 @@ type ingesterMetrics struct {
 	memMetadataCreatedTotal *prometheus.CounterVec
 	memSeriesRemovedTotal   *prometheus.CounterVec
 	memMetadataRemovedTotal *prometheus.CounterVec
+	postingsCacheMetrics    tsdb.PostingsCacheMetrics
 
 	activeSeriesPerUser *prometheus.GaugeVec
 
@@ -48,7 +50,7 @@ type ingesterMetrics struct {
 	inflightRequests        prometheus.GaugeFunc
 }
 
-func newIngesterMetrics(r prometheus.Registerer, createMetricsConflictingWithTSDB bool, activeSeriesEnabled bool, instanceLimitsFn func() *InstanceLimits, ingestionRate *util_math.EwmaRate, inflightRequests *atomic.Int64) *ingesterMetrics {
+func newIngesterMetrics(r prometheus.Registerer, createMetricsConflictingWithTSDB bool, activeSeriesEnabled bool, instanceLimitsFn func() *InstanceLimits, ingestionRate *util_math.EwmaRate, inflightRequests *atomic.Int64, postingsCacheEnabled bool) *ingesterMetrics {
 	const (
 		instanceLimits     = "cortex_ingester_instance_limits"
 		instanceLimitsHelp = "Instance limits used by this ingester." // Must be same for all registrations.
@@ -198,10 +200,34 @@ func newIngesterMetrics(r prometheus.Registerer, createMetricsConflictingWithTSD
 			Name: "cortex_ingester_active_series",
 			Help: "Number of currently active series per user.",
 		}, []string{"user"}),
+
+		// Not registered automatically, but only if postingsCacheEnabled is true.
+		postingsCacheMetrics: tsdb.PostingsCacheMetrics{
+			CacheRequests: prometheus.NewCounter(prometheus.CounterOpts{
+				Name: "cortex_ingester_postings_cache_requests",
+				Help: "Count of cache adds in the ingester postings cache.",
+			}),
+
+			CacheHits: prometheus.NewCounter(prometheus.CounterOpts{
+				Name: "cortex_ingester_postings_cache_hits",
+				Help: "Count of cache hits in the ingester postings cache.",
+			}),
+
+			CacheEvicts: prometheus.NewCounter(prometheus.CounterOpts{
+				Name: "cortex_ingester_postings_cache_evicts",
+				Help: "Count of cache evictions in the ingester postings cache, excluding items that got evicted due to TTL.",
+			}),
+		},
 	}
 
 	if activeSeriesEnabled && r != nil {
 		r.MustRegister(m.activeSeriesPerUser)
+	}
+
+	if postingsCacheEnabled && r != nil {
+		r.MustRegister(m.postingsCacheMetrics.CacheRequests)
+		r.MustRegister(m.postingsCacheMetrics.CacheHits)
+		r.MustRegister(m.postingsCacheMetrics.CacheEvicts)
 	}
 
 	if createMetricsConflictingWithTSDB {
