@@ -168,6 +168,7 @@ type Limits struct {
 	MaxCacheFreshness            model.Duration `yaml:"max_cache_freshness" json:"max_cache_freshness"`
 	MaxQueriersPerTenant         float64        `yaml:"max_queriers_per_tenant" json:"max_queriers_per_tenant"`
 	QueryVerticalShardSize       int            `yaml:"query_vertical_shard_size" json:"query_vertical_shard_size" doc:"hidden"`
+	QueryPartialData             bool           `yaml:"query_partial_data" json:"query_partial_data" doc:"nocli|description=Enable query to return partial data with warning message.|default=false"`
 
 	// Query Frontend / Scheduler enforced limits.
 	MaxOutstandingPerTenant     int           `yaml:"max_outstanding_requests_per_tenant" json:"max_outstanding_requests_per_tenant"`
@@ -725,6 +726,10 @@ func (o *Overrides) QueryPriority(userID string) QueryPriority {
 // QueryRejection returns the query reject config for the tenant
 func (o *Overrides) QueryRejection(userID string) QueryRejection {
 	return o.GetOverridesForUser(userID).QueryRejection
+}
+
+func (o *Overrides) QueryPartialData(userID string) bool {
+	return o.GetOverridesForUser(userID).QueryPartialData
 }
 
 // EnforceMetricName whether to enforce the presence of a metric name.

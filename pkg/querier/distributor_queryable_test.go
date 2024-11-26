@@ -75,6 +75,7 @@ func TestDistributorQuerier_SelectShouldHonorQueryIngestersWithin(t *testing.T) 
 			expectedMinT:         util.TimeToMillis(now.Add(-60 * time.Minute)),
 			expectedMaxT:         util.TimeToMillis(now.Add(-30 * time.Minute)),
 		},
+		"should return warning if queryPartialData is enabled": {},
 	}
 
 	for _, streamingMetadataEnabled := range []bool{false, true} {
@@ -89,7 +90,7 @@ func TestDistributorQuerier_SelectShouldHonorQueryIngestersWithin(t *testing.T) 
 				distributor.On("MetricsForLabelMatchersStream", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return([]model.Metric{}, nil)
 
 				ctx := user.InjectOrgID(context.Background(), "test")
-				queryable := newDistributorQueryable(distributor, streamingMetadataEnabled, true, nil, testData.queryIngestersWithin)
+				queryable := newDistributorQueryable(distributor, streamingMetadataEnabled, true, nil, testData.queryIngestersWithin, mockLimits{})
 				querier, err := queryable.Querier(testData.queryMinT, testData.queryMaxT)
 				require.NoError(t, err)
 
@@ -128,7 +129,7 @@ func TestDistributorQueryableFilter(t *testing.T) {
 	t.Parallel()
 
 	d := &MockDistributor{}
-	dq := newDistributorQueryable(d, false, true, nil, 1*time.Hour)
+	dq := newDistributorQueryable(d, false, true, nil, 1*time.Hour, mockLimits{})
 
 	now := time.Now()
 
@@ -172,7 +173,7 @@ func TestIngesterStreaming(t *testing.T) {
 			nil)
 
 		ctx := user.InjectOrgID(context.Background(), "0")
-		queryable := newDistributorQueryable(d, true, true, batch.NewChunkMergeIterator, 0)
+		queryable := newDistributorQueryable(d, true, true, batch.NewChunkMergeIterator, 0, mockLimits{})
 		querier, err := queryable.Querier(mint, maxt)
 		require.NoError(t, err)
 
@@ -228,7 +229,7 @@ func TestDistributorQuerier_LabelNames(t *testing.T) {
 						Return(metrics, nil)
 				}
 
-				queryable := newDistributorQueryable(d, streamingEnabled, labelNamesWithMatchers, nil, 0)
+				queryable := newDistributorQueryable(d, streamingEnabled, labelNamesWithMatchers, nil, 0, mockLimits{})
 				querier, err := queryable.Querier(mint, maxt)
 				require.NoError(t, err)
 
@@ -241,3 +242,35 @@ func TestDistributorQuerier_LabelNames(t *testing.T) {
 		}
 	}
 }
+
+type mockLimits struct{}
+
+func (m mockLimits) MaxQueryLookback(string) time.Duration {
+	return time.Minute
+}
+
+func (m mockLimits) MaxQueryLength(string) time.Duration {
+	return time.Minute
+}
+
+func (m mockLimits) MaxQueryParallelism(string) int {
+	return 1 // Flag default.
+}
+
+func (m mockLimits) MaxCacheFreshness(string) time.Duration {
+	return time.Minute
+}
+
+func (m mockLimits) QueryVerticalShardSize(string) int {
+	return 0
+}
+
+func (m mockLimits) QueryPriority(string) validation.QueryPriority {
+	return validation.QueryPriority{}
+}
+
+func (m mockLimits) QueryRejection(string) validation.QueryRejection {
+	return validation.QueryRejection{}
+}
+
+func (m mockLimits) QueryPartialData(string) bool { return false }

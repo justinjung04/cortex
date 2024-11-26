@@ -4,6 +4,8 @@ import (
 	"context"
 	"sort"
 	"time"
+
+	"github.com/cortexproject/cortex/pkg/querier/partialdata"
 )
 
 // ReplicationSet describes the instances to talk to for a given key, and how
@@ -39,8 +41,9 @@ func (r ReplicationSet) Do(ctx context.Context, delay time.Duration, zoneResults
 	}
 
 	var (
-		ch         = make(chan instanceResult, len(r.Instances))
-		forceStart = make(chan struct{}, r.MaxErrors)
+		ch                = make(chan instanceResult, len(r.Instances))
+		forceStart        = make(chan struct{}, r.MaxErrors)
+		returnPartialData = partialdata.FromContext(ctx)
 	)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -68,13 +71,19 @@ func (r ReplicationSet) Do(ctx context.Context, delay time.Duration, zoneResults
 		}(i, &r.Instances[i])
 	}
 
+	trackerFailed := false
+	cnt := 0
 	for !tracker.succeeded() {
 		select {
 		case res := <-ch:
 			tracker.done(res.instance, res.res, res.err)
 			if res.err != nil {
 				if tracker.failed() {
-					return nil, res.err
+					if returnPartialData {
+						trackerFailed = true
+					} else {
+						return nil, res.err
+					}
 				}
 
 				// force one of the delayed requests to start
@@ -82,10 +91,19 @@ func (r ReplicationSet) Do(ctx context.Context, delay time.Duration, zoneResults
 					forceStart <- struct{}{}
 				}
 			}
+			cnt++
 
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
+
+		if cnt == len(r.Instances) {
+			break
+		}
+	}
+
+	if returnPartialData && trackerFailed {
+		return tracker.getResults(), partialdata.Error{}
 	}
 
 	return tracker.getResults(), nil

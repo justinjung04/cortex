@@ -266,6 +266,8 @@ func (m mockLimits) QueryRejection(userID string) validation.QueryRejection {
 	return validation.QueryRejection{}
 }
 
+func (m mockLimits) QueryPartialData(string) bool { return false }
+
 type mockHandler struct {
 	mock.Mock
 }

@@ -30,4 +30,6 @@ type Limits interface {
 	QueryPriority(userID string) validation.QueryPriority
 
 	QueryRejection(userID string) validation.QueryRejection
+
+	QueryPartialData(userID string) bool
 }

@@ -16,7 +16,10 @@ import (
 
 	"github.com/cortexproject/cortex/pkg/cortexpb"
 	"github.com/cortexproject/cortex/pkg/ingester/client"
+	"github.com/cortexproject/cortex/pkg/querier/partialdata"
 	"github.com/cortexproject/cortex/pkg/querier/series"
+	"github.com/cortexproject/cortex/pkg/querier/tripperware"
+	"github.com/cortexproject/cortex/pkg/tenant"
 	"github.com/cortexproject/cortex/pkg/util"
 	"github.com/cortexproject/cortex/pkg/util/chunkcompat"
 	"github.com/cortexproject/cortex/pkg/util/spanlogger"
@@ -36,13 +39,14 @@ type Distributor interface {
 	MetricsMetadata(ctx context.Context) ([]scrape.MetricMetadata, error)
 }
 
-func newDistributorQueryable(distributor Distributor, streamingMetdata bool, labelNamesWithMatchers bool, iteratorFn chunkIteratorFunc, queryIngestersWithin time.Duration) QueryableWithFilter {
+func newDistributorQueryable(distributor Distributor, streamingMetdata bool, labelNamesWithMatchers bool, iteratorFn chunkIteratorFunc, queryIngestersWithin time.Duration, limits tripperware.Limits) QueryableWithFilter {
 	return distributorQueryable{
 		distributor:            distributor,
 		streamingMetdata:       streamingMetdata,
 		labelNamesWithMatchers: labelNamesWithMatchers,
 		iteratorFn:             iteratorFn,
 		queryIngestersWithin:   queryIngestersWithin,
+		limits:                 limits,
 	}
 }
 
@@ -52,6 +56,7 @@ type distributorQueryable struct {
 	labelNamesWithMatchers bool
 	iteratorFn             chunkIteratorFunc
 	queryIngestersWithin   time.Duration
+	limits                 tripperware.Limits
 }
 
 func (d distributorQueryable) Querier(mint, maxt int64) (storage.Querier, error) {
@@ -63,6 +68,7 @@ func (d distributorQueryable) Querier(mint, maxt int64) (storage.Querier, error)
 		labelNamesMatchers:   d.labelNamesWithMatchers,
 		chunkIterFn:          d.iteratorFn,
 		queryIngestersWithin: d.queryIngestersWithin,
+		limits:               d.limits,
 	}, nil
 }
 
@@ -78,6 +84,7 @@ type distributorQuerier struct {
 	labelNamesMatchers   bool
 	chunkIterFn          chunkIteratorFunc
 	queryIngestersWithin time.Duration
+	limits               tripperware.Limits
 }
 
 // Select implements storage.Querier interface.
@@ -134,8 +141,17 @@ func (q *distributorQuerier) Select(ctx context.Context, sortSeries bool, sp *st
 }
 
 func (q *distributorQuerier) streamingSelect(ctx context.Context, sortSeries bool, minT, maxT int64, matchers []*labels.Matcher) storage.SeriesSet {
-	results, err := q.distributor.QueryStream(ctx, model.Time(minT), model.Time(maxT), matchers...)
+	userID, err := tenant.TenantID(ctx)
 	if err != nil {
+		return storage.ErrSeriesSet(err)
+	}
+
+	partialDataEnabled := partialdata.IsEnabled(q.limits, userID)
+	ctx = partialdata.ContextWithPartialData(ctx, partialDataEnabled)
+	results, err := q.distributor.QueryStream(ctx, model.Time(minT), model.Time(maxT), matchers...)
+
+	returnPartialData := partialdata.ReturnPartialData(err, partialDataEnabled)
+	if err != nil && !returnPartialData {
 		return storage.ErrSeriesSet(err)
 	}
 
@@ -165,7 +181,14 @@ func (q *distributorQuerier) streamingSelect(ctx context.Context, sortSeries boo
 		return storage.EmptySeriesSet()
 	}
 
-	return series.NewConcreteSeriesSet(sortSeries, serieses)
+	seriesSet := series.NewConcreteSeriesSet(sortSeries, serieses)
+
+	if returnPartialData {
+		warning := annotations.Annotations(nil)
+		return series.NewSeriesSetWithWarnings(seriesSet, warning.Add(err))
+	}
+
+	return seriesSet
 }
 
 func (q *distributorQuerier) LabelValues(ctx context.Context, name string, hints *storage.LabelHints, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error) {
