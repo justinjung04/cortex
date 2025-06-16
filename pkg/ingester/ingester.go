@@ -265,6 +265,8 @@ type Ingester struct {
 
 	matchersCache                storecache.MatchersCache
 	expandedPostingsCacheFactory *cortex_tsdb.ExpandedPostingsCacheFactory
+
+	cancelCauseFuncs []context.CancelCauseFunc
 }
 
 // Shipper interface is used to have an easy way to mock it in tests.
@@ -983,6 +985,9 @@ func (i *Ingester) updateLoop(ctx context.Context) error {
 	labelSetMetricsTicker := time.NewTicker(labelSetMetricsTickInterval)
 	defer labelSetMetricsTicker.Stop()
 
+	evictTicker := time.NewTicker(1 * time.Second)
+	defer evictTicker.Stop()
+
 	for {
 		select {
 		case <-metadataPurgeTicker.C:
@@ -1006,6 +1011,16 @@ func (i *Ingester) updateLoop(ctx context.Context) error {
 			i.updateUserTSDBConfigs()
 		case <-labelSetMetricsTicker.C:
 			i.updateLabelSetMetrics()
+		case <-evictTicker.C:
+			if len(i.cancelCauseFuncs) < 1 {
+				continue
+			}
+
+			fmt.Printf("evict queries: %v\n", len(i.cancelCauseFuncs))
+			for _, f := range i.cancelCauseFuncs {
+				f(fmt.Errorf("query evicted"))
+			}
+			i.cancelCauseFuncs = []context.CancelCauseFunc{}
 		case <-ctx.Done():
 			return nil
 		case err := <-i.subservicesWatcher.Chan():
@@ -2185,6 +2200,10 @@ func (i *Ingester) QueryStream(req *client.QueryRequest, stream client.Ingester_
 	spanlog, ctx := spanlogger.New(stream.Context(), "QueryStream")
 	defer spanlog.Finish()
 
+	var cancelCauseFunc context.CancelCauseFunc
+	ctx, cancelCauseFunc = context.WithCancelCause(ctx)
+	i.cancelCauseFuncs = append(i.cancelCauseFuncs, cancelCauseFunc)
+
 	userID, err := tenant.TenantID(ctx)
 	if err != nil {
 		return err
@@ -2274,8 +2293,14 @@ func (i *Ingester) queryStreamChunks(ctx context.Context, db *userTSDB, from, th
 		End:             through,
 		DisableTrimming: i.cfg.DisableChunkTrimming,
 	}
+	if ctxErr := context.Cause(ctx); ctxErr != nil {
+		fmt.Println("Evict before q.Select")
+		return 0, 0, 0, 0, ctxErr
+	}
+
 	// It's not required to return sorted series because series are sorted by the Cortex querier.
 	ss := q.Select(ctx, false, hints, matchers...)
+	time.Sleep(2 * time.Second)
 	c()
 	if ss.Err() != nil {
 		return 0, 0, 0, 0, ss.Err()
@@ -2334,6 +2359,11 @@ func (i *Ingester) queryStreamChunks(ctx context.Context, db *userTSDB, from, th
 		totalBatchSizeBytes += tsSize
 
 		if (batchSizeBytes > 0 && batchSizeBytes+tsSize > queryStreamBatchMessageSize) || len(chunkSeries) >= queryStreamBatchSize {
+			if ctxErr := context.Cause(ctx); ctxErr != nil {
+				fmt.Println("Evict before client.SendQueryStream")
+				return 0, 0, 0, 0, ctxErr
+			}
+
 			// Adding this series to the batch would make it too big,
 			// flush the data and add it to new batch instead.
 			err = client.SendQueryStream(stream, &client.QueryStreamResponse{
@@ -2358,6 +2388,11 @@ func (i *Ingester) queryStreamChunks(ctx context.Context, db *userTSDB, from, th
 
 	// Final flush any existing metrics
 	if batchSizeBytes != 0 {
+		if ctxErr := context.Cause(ctx); ctxErr != nil {
+			fmt.Println("Evict before flush")
+			return 0, 0, 0, 0, ctxErr
+		}
+
 		err = client.SendQueryStream(stream, &client.QueryStreamResponse{
 			Chunkseries: chunkSeries,
 		})

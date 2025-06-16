@@ -2,6 +2,7 @@ package queryrange
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -95,6 +96,7 @@ func splitQuery(r tripperware.Request, interval time.Duration) ([]tripperware.Re
 	if err != nil {
 		return nil, err
 	}
+	fmt.Printf("split interval: %v\n", interval)
 	var reqs []tripperware.Request
 	for start := r.GetStart(); start < r.GetEnd(); start = nextIntervalBoundary(start, r.GetStep(), interval) + r.GetStep() {
 		end := nextIntervalBoundary(start, r.GetStep(), interval)
@@ -103,6 +105,7 @@ func splitQuery(r tripperware.Request, interval time.Duration) ([]tripperware.Re
 		}
 
 		reqs = append(reqs, r.WithQuery(query).WithStartEnd(start, end))
+		fmt.Printf("split request: %v,%v\n", start, end)
 	}
 	return reqs, nil
 }

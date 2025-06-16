@@ -110,6 +110,10 @@ func (r request) Priority() int64 {
 	return priority
 }
 
+func (r request) RequestKey() string {
+	return ""
+}
+
 // New creates a new frontend. Frontend implements service, and must be started and stopped.
 func New(cfg Config, limits Limits, log log.Logger, registerer prometheus.Registerer, retry *transport.Retry) (*Frontend, error) {
 	f := &Frontend{
@@ -210,6 +214,7 @@ func (f *Frontend) RoundTripGRPC(ctx context.Context, req *httpgrpc.HTTPRequest)
 			response: make(chan *httpgrpc.HTTPResponse, 1),
 		}
 
+		fmt.Printf("enqueue: %v\n", req.GetUrl())
 		if err := f.queueRequest(ctx, &request); err != nil {
 			return nil, err
 		}

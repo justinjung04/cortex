@@ -97,3 +97,10 @@ alertmanager_storage:
   local:
     # Make sure file exist
     path: /tmp/cortex/alerts
+
+query_frontend:
+  query_stats_enabled: true
+
+query_range:
+  max_retries: 0
+#  split_queries_by_interval: 5m

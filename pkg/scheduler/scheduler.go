@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"flag"
+	"fmt"
 	"io"
 	"net/http"
 	"sync"
@@ -175,6 +176,10 @@ func (s schedulerRequest) Priority() int64 {
 	}
 
 	return priority
+}
+
+func (s schedulerRequest) RequestKey() string {
+	return fmt.Sprintf("%s_%d", s.frontendAddress, s.queryID)
 }
 
 // FrontendLoop handles connection from frontend.
