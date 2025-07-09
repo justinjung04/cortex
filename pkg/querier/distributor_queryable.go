@@ -2,6 +2,7 @@ package querier
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"time"
 
@@ -97,6 +98,7 @@ type distributorQuerier struct {
 // Select implements storage.Querier interface.
 // The bool passed is ignored because the series is always sorted.
 func (q *distributorQuerier) Select(ctx context.Context, sortSeries bool, sp *storage.SelectHints, matchers ...*labels.Matcher) storage.SeriesSet {
+	fmt.Printf("distributorQuerier.Select %v\n", ctx.Value("X-Cortex-Query-ID"))
 	log, ctx := spanlogger.New(ctx, "distributorQuerier.Select")
 	defer log.Finish()
 

@@ -2193,6 +2193,8 @@ const queryStreamBatchMessageSize = 1 * 1024 * 1024
 // QueryStream implements service.IngesterServer
 // Streams metrics from a TSDB. This implements the client.IngesterServer interface
 func (i *Ingester) QueryStream(req *client.QueryRequest, stream client.Ingester_QueryStreamServer) (err error) {
+	fmt.Printf("Ingester.QueryStream %v\n", req.GetCortexQueryId())
+
 	defer recoverIngester(i.logger, &err)
 
 	if err = i.checkRunning(); err != nil {
