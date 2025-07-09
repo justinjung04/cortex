@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/munnerz/goautoneg"
 	"github.com/opentracing/opentracing-go"
@@ -88,6 +89,8 @@ func (c instantQueryCodec) DecodeRequest(_ context.Context, r *http.Request, for
 			}
 		}
 	}
+
+	result.Headers["X-Cortex-Query-ID"] = []string{uuid.NewString()}
 
 	return &result, nil
 }

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/opentracing/opentracing-go"
 	otlog "github.com/opentracing/opentracing-go/log"
@@ -148,6 +149,8 @@ func (c prometheusCodec) DecodeRequest(_ context.Context, r *http.Request, forwa
 		}
 	}
 
+	result.Headers["X-Cortex-Query-ID"] = []string{uuid.NewString()}
+
 	return &result, nil
 }
 
@@ -176,7 +179,6 @@ func (c prometheusCodec) EncodeRequest(ctx context.Context, r tripperware.Reques
 	}
 
 	tripperware.SetRequestHeaders(h, c.defaultCodecType, c.compression)
-
 	req := &http.Request{
 		Method:     "GET",
 		RequestURI: u.String(), // This is what the httpgrpc code looks at.
