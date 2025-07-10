@@ -265,6 +265,8 @@ type Ingester struct {
 
 	matchersCache                storecache.MatchersCache
 	expandedPostingsCacheFactory *cortex_tsdb.ExpandedPostingsCacheFactory
+
+	requestTracker *util.RequestTracker
 }
 
 // Shipper interface is used to have an easy way to mock it in tests.
@@ -736,6 +738,7 @@ func New(cfg Config, limits *validation.Overrides, registerer prometheus.Registe
 		ingestionRate:                util_math.NewEWMARate(0.2, instanceIngestionRateTickInterval),
 		expandedPostingsCacheFactory: cortex_tsdb.NewExpandedPostingsCacheFactory(cfg.BlocksStorageConfig.TSDB.PostingsCache),
 		matchersCache:                storecache.NoopMatchersCache,
+		requestTracker:               util.NewRequestTracker(),
 	}
 
 	if cfg.MatchersCacheMaxItems > 0 {
@@ -2204,6 +2207,8 @@ func (i *Ingester) QueryStream(req *client.QueryRequest, stream client.Ingester_
 	spanlog, ctx := spanlogger.New(stream.Context(), "QueryStream")
 	defer spanlog.Finish()
 
+	ctx = context.WithValue(ctx, "X-Cortex-Query-ID", req.GetCortexQueryId())
+
 	userID, err := tenant.TenantID(ctx)
 	if err != nil {
 		return err
@@ -2300,6 +2305,7 @@ func (i *Ingester) queryStreamChunks(ctx context.Context, db *userTSDB, from, th
 		return 0, 0, 0, 0, ss.Err()
 	}
 
+	cortexQueryId := ctx.Value("X-Cortex-Query-ID").(string)
 	chunkSeries := getTimeSeriesChunksSlice()
 	defer putTimeSeriesChunksSlice(chunkSeries)
 	batchSizeBytes := 0
@@ -2315,6 +2321,8 @@ func (i *Ingester) queryStreamChunks(ctx context.Context, db *userTSDB, from, th
 		ts := client.TimeSeriesChunk{
 			Labels: cortexpb.FromLabelsToLabelAdapters(series.Labels()),
 		}
+
+		i.requestTracker.TrackBytes(cortexQueryId, int64(ts.Size())) // TODO jungjust add series bytes
 
 		it := series.Iterator(it)
 		for it.Next() {
@@ -2347,6 +2355,7 @@ func (i *Ingester) queryStreamChunks(ctx context.Context, db *userTSDB, from, th
 			ts.Chunks = append(ts.Chunks, ch)
 			numChunks++
 			numSamples += meta.Chunk.NumSamples()
+			i.requestTracker.TrackBytes(cortexQueryId, int64(ch.Size())) // TODO jungjust add chunks bytes
 		}
 		numSeries++
 		tsSize := ts.Size()
