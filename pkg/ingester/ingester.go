@@ -267,6 +267,7 @@ type Ingester struct {
 	expandedPostingsCacheFactory *cortex_tsdb.ExpandedPostingsCacheFactory
 
 	requestTracker *util.RequestTracker
+	cancelMap      map[string]context.CancelCauseFunc
 }
 
 // Shipper interface is used to have an easy way to mock it in tests.
@@ -2207,7 +2208,12 @@ func (i *Ingester) QueryStream(req *client.QueryRequest, stream client.Ingester_
 	spanlog, ctx := spanlogger.New(stream.Context(), "QueryStream")
 	defer spanlog.Finish()
 
-	ctx = context.WithValue(ctx, "X-Cortex-Query-ID", req.GetCortexQueryId())
+	cortexQueryId := req.GetCortexQueryId()
+	ctx = context.WithValue(ctx, "X-Cortex-Query-ID", cortexQueryId)
+
+	var cancelCauseFunc context.CancelCauseFunc
+	ctx, cancelCauseFunc = context.WithCancelCause(ctx)
+	i.cancelMap[cortexQueryId] = cancelCauseFunc
 
 	userID, err := tenant.TenantID(ctx)
 	if err != nil {
@@ -2298,6 +2304,11 @@ func (i *Ingester) queryStreamChunks(ctx context.Context, db *userTSDB, from, th
 		End:             through,
 		DisableTrimming: i.cfg.DisableChunkTrimming,
 	}
+	if ctxErr := context.Cause(ctx); ctxErr != nil {
+		fmt.Println("Evict before q.Select")
+		return 0, 0, 0, 0, ctxErr
+	}
+
 	// It's not required to return sorted series because series are sorted by the Cortex querier.
 	ss := q.Select(ctx, false, hints, matchers...)
 	c()
@@ -2362,6 +2373,11 @@ func (i *Ingester) queryStreamChunks(ctx context.Context, db *userTSDB, from, th
 		totalBatchSizeBytes += tsSize
 
 		if (batchSizeBytes > 0 && batchSizeBytes+tsSize > queryStreamBatchMessageSize) || len(chunkSeries) >= queryStreamBatchSize {
+			if ctxErr := context.Cause(ctx); ctxErr != nil {
+				fmt.Println("Evict before client.SendQueryStream")
+				return 0, 0, 0, 0, ctxErr
+			}
+
 			// Adding this series to the batch would make it too big,
 			// flush the data and add it to new batch instead.
 			err = client.SendQueryStream(stream, &client.QueryStreamResponse{
@@ -2386,6 +2402,11 @@ func (i *Ingester) queryStreamChunks(ctx context.Context, db *userTSDB, from, th
 
 	// Final flush any existing metrics
 	if batchSizeBytes != 0 {
+		if ctxErr := context.Cause(ctx); ctxErr != nil {
+			fmt.Println("Evict before flush")
+			return 0, 0, 0, 0, ctxErr
+		}
+
 		err = client.SendQueryStream(stream, &client.QueryStreamResponse{
 			Chunkseries: chunkSeries,
 		})
