@@ -243,6 +243,7 @@ type Ingester struct {
 	limits               *validation.Overrides
 	limiter              *Limiter
 	resourceBasedLimiter *limiter.ResourceBasedLimiter
+	resourceBasedEvictor *limiter.ResourceBasedLimiter
 	subservicesWatcher   *services.FailureWatcher
 
 	stoppedMtx sync.RWMutex // protects stopped
@@ -813,6 +814,11 @@ func New(cfg Config, limits *validation.Overrides, registerer prometheus.Registe
 		if err != nil {
 			return nil, errors.Wrap(err, "error creating resource based limiter")
 		}
+
+		i.resourceBasedEvictor, err = limiter.NewResourceBasedLimiter(resourceMonitor, map[resource.Type]float64{
+			resource.CPU:  0.3,
+			resource.Heap: 0.3,
+		}, prometheus.NewRegistry(), "ingester")
 	}
 
 	i.BasicService = services.NewBasicService(i.starting, i.updateLoop, i.stopping)
@@ -2282,6 +2288,16 @@ func (i *Ingester) trackInflightQueryRequest() (func(), error) {
 		}
 	}
 
+	if i.resourceBasedEvictor != nil {
+		if err := i.resourceBasedEvictor.AcceptNewRequest(); err != nil {
+			worstRequests := i.requestTracker.GetTop5WorstRequests()
+			level.Warn(i.logger).Log("msg", "resource under pressure", "worst_requests", worstRequests)
+			id := worstRequests[0].ID
+			cancelFunc := i.cancelMap[id]
+			cancelFunc(level.Warn(i.logger).Log("msg", "query evicted", "request_id", id))
+		}
+	}
+
 	return func() {
 		i.inflightQueryRequests.Dec()
 	}, nil
@@ -2305,7 +2321,7 @@ func (i *Ingester) queryStreamChunks(ctx context.Context, db *userTSDB, from, th
 		DisableTrimming: i.cfg.DisableChunkTrimming,
 	}
 	if ctxErr := context.Cause(ctx); ctxErr != nil {
-		fmt.Println("Evict before q.Select")
+		level.Warn(logutil.WithContext(ctx, i.logger)).Log("msg", "query evicted; context cancelled")
 		return 0, 0, 0, 0, ctxErr
 	}
 
@@ -2374,7 +2390,7 @@ func (i *Ingester) queryStreamChunks(ctx context.Context, db *userTSDB, from, th
 
 		if (batchSizeBytes > 0 && batchSizeBytes+tsSize > queryStreamBatchMessageSize) || len(chunkSeries) >= queryStreamBatchSize {
 			if ctxErr := context.Cause(ctx); ctxErr != nil {
-				fmt.Println("Evict before client.SendQueryStream")
+				level.Warn(logutil.WithContext(ctx, i.logger)).Log("msg", "query evicted; context cancelled")
 				return 0, 0, 0, 0, ctxErr
 			}
 
@@ -2403,7 +2419,7 @@ func (i *Ingester) queryStreamChunks(ctx context.Context, db *userTSDB, from, th
 	// Final flush any existing metrics
 	if batchSizeBytes != 0 {
 		if ctxErr := context.Cause(ctx); ctxErr != nil {
-			fmt.Println("Evict before flush")
+			level.Warn(logutil.WithContext(ctx, i.logger)).Log("msg", "query evicted; context cancelled")
 			return 0, 0, 0, 0, ctxErr
 		}
 

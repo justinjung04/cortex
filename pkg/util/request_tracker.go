@@ -2,6 +2,7 @@ package util
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -81,6 +82,39 @@ func (rt *RequestTracker) GetRequests() []string {
 	}
 
 	return requests
+}
+
+type RequestRateItem struct {
+	ID   string
+	Rate float64
+}
+
+func (rt *RequestTracker) GetTop5WorstRequests() []RequestRateItem {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+
+	// sort, print top 5 and return worst request ID
+	allRates := make([]RequestRateItem, 0, len(rt.rates))
+
+	threshold := time.Now().Add(-1 * time.Minute)
+
+	for id, rate := range rt.rates {
+		// Skip expired entries (e.g., not accessed in the last hour)
+		if rate.lastAccess.Before(threshold) {
+			continue
+		}
+
+		allRates = append(allRates, RequestRateItem{
+			ID:   id,
+			Rate: rate.slidingWindow.getRate(),
+		})
+	}
+
+	sort.Slice(allRates, func(i, j int) bool {
+		return allRates[i].Rate > allRates[j].Rate
+	})
+
+	return allRates[:5]
 }
 
 type slidingWindowRate struct {
