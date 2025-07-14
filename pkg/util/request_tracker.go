@@ -89,14 +89,28 @@ type RequestRateItem struct {
 	Rate float64
 }
 
-func (rt *RequestTracker) GetTop5WorstRequests() []RequestRateItem {
+type RequestRateItemArr []RequestRateItem
+
+func (r *RequestRateItemArr) String() string {
+	str := ""
+	for _, item := range *r {
+		str += fmt.Sprintf("{ID:%s, Rate:%f}", item.ID, item.Rate)
+	}
+	return str
+}
+
+func (rt *RequestTracker) GetTop5WorstRequests() RequestRateItemArr {
+	if len(rt.rates) == 0 {
+		return make(RequestRateItemArr, 0)
+	}
+
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
 
 	// sort, print top 5 and return worst request ID
 	allRates := make([]RequestRateItem, 0, len(rt.rates))
 
-	threshold := time.Now().Add(-1 * time.Minute)
+	threshold := time.Now().Add(-5 * time.Second)
 
 	for id, rate := range rt.rates {
 		// Skip expired entries (e.g., not accessed in the last hour)
@@ -114,7 +128,9 @@ func (rt *RequestTracker) GetTop5WorstRequests() []RequestRateItem {
 		return allRates[i].Rate > allRates[j].Rate
 	})
 
-	return allRates[:5]
+	length := min(len(allRates), len(rt.rates))
+
+	return allRates[:length]
 }
 
 type slidingWindowRate struct {
@@ -185,6 +201,5 @@ func (swr *slidingWindowRate) getRate() float64 {
 		return 0
 	}
 
-	fmt.Printf("totalBytes %v, %v\n", totalBytes, duration)
 	return float64(totalBytes) / duration
 }

@@ -11,9 +11,15 @@ import (
 
 type QueryProtection struct {
 	Rejection rejection `json:"rejection"`
+	Eviction  eviction  `json:"eviction"`
 }
 
 type rejection struct {
+	Enabled   bool      `yaml:"enabled"`
+	Threshold threshold `yaml:"threshold"`
+}
+
+type eviction struct {
 	Enabled   bool      `yaml:"enabled"`
 	Threshold threshold `yaml:"threshold"`
 }
@@ -27,6 +33,9 @@ func (cfg *QueryProtection) RegisterFlagsWithPrefix(f *flag.FlagSet, prefix stri
 	f.BoolVar(&cfg.Rejection.Enabled, prefix+"query-protection.rejection.enabled", false, "EXPERIMENTAL: Enable query rejection feature, where the component return 503 to all incoming query requests when the configured thresholds are breached.")
 	f.Float64Var(&cfg.Rejection.Threshold.CPUUtilization, prefix+"query-protection.rejection.threshold.cpu-utilization", 0, "EXPERIMENTAL: Max CPU utilization that this ingester can reach before rejecting new query request (across all tenants) in percentage, between 0 and 1. monitored_resources config must include the resource type. 0 to disable.")
 	f.Float64Var(&cfg.Rejection.Threshold.HeapUtilization, prefix+"query-protection.rejection.threshold.heap-utilization", 0, "EXPERIMENTAL: Max heap utilization that this ingester can reach before rejecting new query request (across all tenants) in percentage, between 0 and 1. monitored_resources config must include the resource type. 0 to disable.")
+	f.BoolVar(&cfg.Eviction.Enabled, prefix+"query-protection.eviction.enabled", false, "EXPERIMENTAL: Enable query eviction feature, where the component return 429 to the heaviest query request when the configured thresholds are breached.")
+	f.Float64Var(&cfg.Eviction.Threshold.CPUUtilization, prefix+"query-protection.eviction.threshold.cpu-utilization", 0, "EXPERIMENTAL: Max CPU utilization that this ingester can reach before evicting the heaviest query request in percentage, between 0 and 1. monitored_resources config must include the resource type. 0 to disable.")
+	f.Float64Var(&cfg.Eviction.Threshold.HeapUtilization, prefix+"query-protection.eviction.threshold.heap-utilization", 0, "EXPERIMENTAL: Max heap utilization that this ingester can reach before evicting the heaviest query request in percentage, between 0 and 1. monitored_resources config must include the resource type. 0 to disable.")
 }
 
 func (cfg *QueryProtection) Validate(monitoredResources flagext.StringSliceCSV) error {

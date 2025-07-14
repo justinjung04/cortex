@@ -2,7 +2,6 @@ package distributor
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"sort"
 	"time"
@@ -244,7 +243,6 @@ func (d *Distributor) queryIngesterStream(ctx context.Context, replicationSet ri
 
 		d.ingesterQueries.WithLabelValues(ingesterId).Inc()
 
-		fmt.Printf("Distributor.queryIngesterStream %v\n", ctx.Value("X-Cortex-Query-ID"))
 		stream, err := client.(ingester_client.IngesterClient).QueryStream(ctx, req)
 		if err != nil {
 			d.ingesterQueryFailures.WithLabelValues(ingesterId).Inc()

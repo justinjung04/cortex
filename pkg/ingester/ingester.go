@@ -268,7 +268,10 @@ type Ingester struct {
 	expandedPostingsCacheFactory *cortex_tsdb.ExpandedPostingsCacheFactory
 
 	requestTracker *util.RequestTracker
-	cancelMap      map[string]context.CancelCauseFunc
+
+	cancelMapMtx sync.RWMutex
+	cancelMap    map[string]context.CancelCauseFunc
+	shouldCancel bool
 }
 
 // Shipper interface is used to have an easy way to mock it in tests.
@@ -741,6 +744,8 @@ func New(cfg Config, limits *validation.Overrides, registerer prometheus.Registe
 		expandedPostingsCacheFactory: cortex_tsdb.NewExpandedPostingsCacheFactory(cfg.BlocksStorageConfig.TSDB.PostingsCache),
 		matchersCache:                storecache.NoopMatchersCache,
 		requestTracker:               util.NewRequestTracker(),
+		cancelMap:                    map[string]context.CancelCauseFunc{},
+		shouldCancel:                 false,
 	}
 
 	if cfg.MatchersCacheMaxItems > 0 {
@@ -803,22 +808,29 @@ func New(cfg Config, limits *validation.Overrides, registerer prometheus.Registe
 	level.Info(i.logger).Log("msg", "TSDB idle compaction timeout set", "timeout", i.TSDBState.compactionIdleTimeout)
 
 	if resourceMonitor != nil {
-		resourceLimits := make(map[resource.Type]float64)
+		rejectionLimits := make(map[resource.Type]float64)
 		if cfg.QueryProtection.Rejection.Threshold.CPUUtilization > 0 {
-			resourceLimits[resource.CPU] = cfg.QueryProtection.Rejection.Threshold.CPUUtilization
+			rejectionLimits[resource.CPU] = cfg.QueryProtection.Rejection.Threshold.CPUUtilization
 		}
 		if cfg.QueryProtection.Rejection.Threshold.HeapUtilization > 0 {
-			resourceLimits[resource.Heap] = cfg.QueryProtection.Rejection.Threshold.HeapUtilization
+			rejectionLimits[resource.Heap] = cfg.QueryProtection.Rejection.Threshold.HeapUtilization
 		}
-		i.resourceBasedLimiter, err = limiter.NewResourceBasedLimiter(resourceMonitor, resourceLimits, registerer, "ingester")
+		i.resourceBasedLimiter, err = limiter.NewResourceBasedLimiter(resourceMonitor, rejectionLimits, registerer, "ingester")
 		if err != nil {
-			return nil, errors.Wrap(err, "error creating resource based limiter")
+			return nil, errors.Wrap(err, "error creating resource based rejector")
 		}
 
-		i.resourceBasedEvictor, err = limiter.NewResourceBasedLimiter(resourceMonitor, map[resource.Type]float64{
-			resource.CPU:  0.3,
-			resource.Heap: 0.3,
-		}, prometheus.NewRegistry(), "ingester")
+		evictionLimits := make(map[resource.Type]float64)
+		if cfg.QueryProtection.Eviction.Threshold.CPUUtilization > 0 {
+			evictionLimits[resource.CPU] = cfg.QueryProtection.Eviction.Threshold.CPUUtilization
+		}
+		if cfg.QueryProtection.Eviction.Threshold.HeapUtilization > 0 {
+			evictionLimits[resource.Heap] = cfg.QueryProtection.Eviction.Threshold.HeapUtilization
+		}
+		i.resourceBasedEvictor, err = limiter.NewResourceBasedLimiter(resourceMonitor, evictionLimits, prometheus.NewRegistry(), "ingester")
+		if err != nil {
+			return nil, errors.Wrap(err, "error creating resource based evictor")
+		}
 	}
 
 	i.BasicService = services.NewBasicService(i.starting, i.updateLoop, i.stopping)
@@ -998,8 +1010,14 @@ func (i *Ingester) updateLoop(ctx context.Context) error {
 	labelSetMetricsTicker := time.NewTicker(labelSetMetricsTickInterval)
 	defer labelSetMetricsTicker.Stop()
 
+	shouldCancelTicker := time.NewTicker(10 * time.Second)
+	defer shouldCancelTicker.Stop()
+
 	for {
 		select {
+		case <-shouldCancelTicker.C:
+			i.shouldCancel = !i.shouldCancel
+			level.Info(i.logger).Log("msg", "toggle shouldCancel", "shouldCancel", i.shouldCancel)
 		case <-metadataPurgeTicker.C:
 			i.purgeUserMetricsMetadata()
 		case <-ingestionRateTicker.C:
@@ -2203,8 +2221,6 @@ const queryStreamBatchMessageSize = 1 * 1024 * 1024
 // QueryStream implements service.IngesterServer
 // Streams metrics from a TSDB. This implements the client.IngesterServer interface
 func (i *Ingester) QueryStream(req *client.QueryRequest, stream client.Ingester_QueryStreamServer) (err error) {
-	fmt.Printf("Ingester.QueryStream %v\n", req.GetCortexQueryId())
-
 	defer recoverIngester(i.logger, &err)
 
 	if err = i.checkRunning(); err != nil {
@@ -2219,7 +2235,9 @@ func (i *Ingester) QueryStream(req *client.QueryRequest, stream client.Ingester_
 
 	var cancelCauseFunc context.CancelCauseFunc
 	ctx, cancelCauseFunc = context.WithCancelCause(ctx)
+	i.cancelMapMtx.Lock()
 	i.cancelMap[cortexQueryId] = cancelCauseFunc
+	i.cancelMapMtx.Unlock()
 
 	userID, err := tenant.TenantID(ctx)
 	if err != nil {
@@ -2288,12 +2306,26 @@ func (i *Ingester) trackInflightQueryRequest() (func(), error) {
 		}
 	}
 
-	if i.resourceBasedEvictor != nil {
-		if err := i.resourceBasedEvictor.AcceptNewRequest(); err != nil {
-			worstRequests := i.requestTracker.GetTop5WorstRequests()
-			level.Warn(i.logger).Log("msg", "resource under pressure", "worst_requests", worstRequests)
+	//if i.resourceBasedEvictor != nil {
+	//	if err := i.resourceBasedEvictor.AcceptNewRequest(); err != nil {
+	//		worstRequests := i.requestTracker.GetTop5WorstRequests()
+	//		level.Warn(i.logger).Log("msg", "resource under pressure", "worst_requests", worstRequests)
+	//		id := worstRequests[0].ID
+	//		i.cancelMapMtx.RLock()
+	//		cancelFunc := i.cancelMap[id]
+	//		i.cancelMapMtx.RUnlock()
+	//		cancelFunc(level.Warn(i.logger).Log("msg", "query evicted", "request_id", id))
+	//	}
+	//}
+
+	if i.shouldCancel {
+		worstRequests := i.requestTracker.GetTop5WorstRequests()
+		if len(worstRequests) > 0 {
+			level.Warn(i.logger).Log("msg", "resource under pressure", "worst_requests", worstRequests.String())
 			id := worstRequests[0].ID
+			i.cancelMapMtx.RLock()
 			cancelFunc := i.cancelMap[id]
+			i.cancelMapMtx.RUnlock()
 			cancelFunc(level.Warn(i.logger).Log("msg", "query evicted", "request_id", id))
 		}
 	}
