@@ -2,7 +2,6 @@ package queryrange
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -58,7 +57,6 @@ func (s splitByInterval) Do(ctx context.Context, r tripperware.Request) (tripper
 		return nil, httpgrpc.Errorf(http.StatusBadRequest, "%s", err.Error())
 	}
 	reqs, err := splitQuery(r, interval)
-	fmt.Printf("=== Split into: %v ===\n", len(reqs))
 	if err != nil {
 		return nil, httpgrpc.Errorf(http.StatusBadRequest, "%s", err.Error())
 	}

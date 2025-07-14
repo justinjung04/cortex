@@ -101,7 +101,6 @@ func (q *QueryAPI) RangeQueryHandler(r *http.Request) (result apiFuncResult) {
 	ctx = engine.AddEngineTypeToContext(ctx, r)
 	ctx = querier.AddBlockStoreTypeToContext(ctx, r.Header.Get(querier.BlockStoreTypeHeader))
 	ctx = context.WithValue(ctx, "X-Cortex-Query-ID", r.Header.Get("X-Cortex-Query-ID"))
-	fmt.Printf("QueryAPI.RangeQueryHandler %v, %v\n", r.Header.Get("X-Cortex-Query-ID"), ctx.Value("X-Cortex-Query-ID"))
 	qry, err := q.queryEngine.NewRangeQuery(ctx, q.queryable, opts, r.FormValue("query"), convertMsToTime(start), convertMsToTime(end), convertMsToDuration(step))
 	if err != nil {
 		return invalidParamError(httpgrpc.Errorf(http.StatusBadRequest, "%s", err.Error()), "query")
