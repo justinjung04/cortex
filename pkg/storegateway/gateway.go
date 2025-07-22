@@ -15,9 +15,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/thanos/pkg/extprom"
-	"github.com/thanos-io/thanos/pkg/store/storepb"
-	"github.com/weaveworks/common/httpgrpc"
 	"github.com/weaveworks/common/logging"
+
+	"github.com/thanos-io/thanos/pkg/store/storepb"
 
 	"github.com/cortexproject/cortex/pkg/configs"
 	"github.com/cortexproject/cortex/pkg/ring"
@@ -129,6 +129,7 @@ type StoreGateway struct {
 	subservicesWatcher *services.FailureWatcher
 
 	resourceBasedLimiter *util_limiter.ResourceBasedLimiter
+	requestTracker       *util.RequestTracker
 
 	bucketSync *prometheus.CounterVec
 }
@@ -160,9 +161,10 @@ func newStoreGateway(gatewayCfg Config, storageCfg cortex_tsdb.BlocksStorageConf
 	var err error
 
 	g := &StoreGateway{
-		gatewayCfg: gatewayCfg,
-		storageCfg: storageCfg,
-		logger:     logger,
+		gatewayCfg:     gatewayCfg,
+		storageCfg:     storageCfg,
+		logger:         logger,
+		requestTracker: util.NewRequestTracker(),
 		bucketSync: promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
 			Name: "cortex_storegateway_bucket_sync_total",
 			Help: "Total number of times the bucket sync operation triggered.",
@@ -237,7 +239,7 @@ func newStoreGateway(gatewayCfg Config, storageCfg cortex_tsdb.BlocksStorageConf
 		shardingStrategy = NewNoShardingStrategy(logger, allowedTenants)
 	}
 
-	g.stores, err = NewBucketStores(storageCfg, shardingStrategy, bucketClient, limits, logLevel, logger, extprom.WrapRegistererWith(prometheus.Labels{"component": "store-gateway"}, reg))
+	g.stores, err = NewBucketStores(storageCfg, shardingStrategy, bucketClient, limits, logLevel, logger, extprom.WrapRegistererWith(prometheus.Labels{"component": "store-gateway"}, reg), g.requestTracker)
 	if err != nil {
 		return nil, errors.Wrap(err, "create bucket stores")
 	}
@@ -436,8 +438,16 @@ func (g *StoreGateway) checkResourceUtilization() error {
 	}
 
 	if err := g.resourceBasedLimiter.AcceptNewRequest(); err != nil {
-		level.Warn(g.logger).Log("msg", "failed to accept request", "err", err)
-		return httpgrpc.Errorf(http.StatusServiceUnavailable, "failed to query: %s", util_limiter.ErrResourceLimitReachedStr)
+		//level.Warn(g.logger).Log("msg", "failed to accept request", "err", err)
+		//return httpgrpc.Errorf(http.StatusServiceUnavailable, "failed to query: %s", util_limiter.ErrResourceLimitReachedStr)
+		worstRequests := g.requestTracker.GetWorstRequests()
+		if len(worstRequests) == 0 {
+			level.Warn(g.logger).Log("msg", "=============NO REQUEST TRACKED============")
+			return nil
+		}
+		worstRequestID := worstRequests[0].ID
+		level.Warn(g.logger).Log("msg", "==========EVICT========", "worst_requests", worstRequests, "evicting_request", worstRequestID)
+		g.requestTracker.CancelRequest(worstRequestID)
 	}
 
 	return nil

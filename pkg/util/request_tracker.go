@@ -1,6 +1,7 @@
 package util
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"sync"
@@ -8,18 +9,32 @@ import (
 )
 
 type RequestTracker struct {
-	mu    sync.RWMutex
-	rates map[string]*RequestRate
+	ratesMtx     sync.RWMutex
+	rates        map[string]*RequestRate
+	cancelsMtx   sync.RWMutex
+	cancels      map[string][]context.CancelCauseFunc
+	evictAllowed bool
+	lastEvict    time.Time
 }
 
 type RequestRate struct {
 	slidingWindow *slidingWindowRate
-	lastAccess    time.Time
+	lastUpdate    time.Time
 }
+
+const (
+	ttl           = 10 * time.Second
+	evictInterval = 5 * time.Second
+	slidingWindow = 5 * time.Second
+)
 
 func NewRequestTracker() *RequestTracker {
 	rt := &RequestTracker{
-		rates: make(map[string]*RequestRate),
+		rates:        make(map[string]*RequestRate),
+		ratesMtx:     sync.RWMutex{},
+		cancels:      make(map[string][]context.CancelCauseFunc),
+		cancelsMtx:   sync.RWMutex{},
+		evictAllowed: true,
 	}
 
 	// Start cleanup goroutine
@@ -28,7 +43,7 @@ func NewRequestTracker() *RequestTracker {
 }
 
 func (rt *RequestTracker) cleanupLoop() {
-	ticker := time.NewTicker(10 * time.Second) // Check every 10 seconds
+	ticker := time.NewTicker(time.Second) // Check every second
 	defer ticker.Stop()
 
 	for range ticker.C {
@@ -37,84 +52,85 @@ func (rt *RequestTracker) cleanupLoop() {
 }
 
 func (rt *RequestTracker) cleanup() {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-
-	threshold := time.Now().Add(-1 * time.Minute) // 1 minute timeout
+	now := time.Now()
+	cutoff := now.Add(-ttl)
 	for requestID, rate := range rt.rates {
-		if rate.lastAccess.Before(threshold) {
+		if rate.lastUpdate.Before(cutoff) {
+			fmt.Println("=======clean up======", requestID, rate.lastUpdate, cutoff, now)
+			rt.ratesMtx.Lock()
+			rt.cancelsMtx.Lock()
 			delete(rt.rates, requestID)
+			delete(rt.cancels, requestID)
+			rt.ratesMtx.Unlock()
+			rt.cancelsMtx.Unlock()
 		}
 	}
+
+	evictTime := now.Add(-evictInterval)
+	if !rt.evictAllowed && rt.lastEvict.Before(evictTime) {
+		rt.evictAllowed = true
+	}
+}
+
+func (rt *RequestTracker) AddRequest(requestID string, f context.CancelCauseFunc) {
+	rt.cancelsMtx.Lock()
+	defer rt.cancelsMtx.Unlock()
+
+	if _, exists := rt.cancels[requestID]; !exists {
+		rt.cancels[requestID] = []context.CancelCauseFunc{}
+	}
+	rt.cancels[requestID] = append(rt.cancels[requestID], f)
+}
+
+func (rt *RequestTracker) CancelRequest(requestID string) {
+	if _, exists := rt.cancels[requestID]; !exists {
+		return
+	}
+
+	for _, cancel := range rt.cancels[requestID] {
+		cancel(fmt.Errorf("request %s evicted", requestID))
+	}
+
+	rt.ratesMtx.Lock()
+	rt.cancelsMtx.Lock()
+	delete(rt.rates, requestID)
+	delete(rt.cancels, requestID)
+	rt.ratesMtx.Unlock()
+	rt.cancelsMtx.Unlock()
+	rt.evictAllowed = false
 }
 
 func (rt *RequestTracker) TrackBytes(requestID string, bytes int64) {
-	rt.mu.Lock()
+	rt.ratesMtx.Lock()
+	defer rt.ratesMtx.Unlock()
+
+	now := time.Now()
 	if _, exists := rt.rates[requestID]; !exists {
 		rt.rates[requestID] = &RequestRate{
-			slidingWindow: newSlidingWindowRate(10 * time.Second),
+			slidingWindow: newSlidingWindowRate(slidingWindow),
 		}
 	}
-	rt.rates[requestID].lastAccess = time.Now()
-	rt.mu.Unlock()
-
+	rt.rates[requestID].lastUpdate = now
 	rt.rates[requestID].slidingWindow.addBytes(bytes)
+	fmt.Println("======TRACK BYTES======", len(rt.rates), requestID, rt.rates[requestID].slidingWindow.getRate(), rt.rates)
 }
 
-func (rt *RequestTracker) GetRate(requestID string) float64 {
-	rt.mu.RLock()
-	rate, exists := rt.rates[requestID]
-	rt.mu.RUnlock()
-
-	if !exists {
-		return 0
-	}
-	return rate.slidingWindow.getRate()
-}
-
-func (rt *RequestTracker) GetRequests() []string {
-	rt.mu.RLock()
-	defer rt.mu.RUnlock()
-
-	requests := make([]string, 0, len(rt.rates))
-	for requestID := range rt.rates {
-		requests = append(requests, requestID)
-	}
-
-	return requests
-}
-
-type RequestRateItem struct {
-	ID   string
-	Rate float64
-}
-
-type RequestRateItemArr []RequestRateItem
-
-func (r *RequestRateItemArr) String() string {
-	str := ""
-	for _, item := range *r {
-		str += fmt.Sprintf("{ID:%s, Rate:%f}", item.ID, item.Rate)
-	}
-	return str
-}
-
-func (rt *RequestTracker) GetTop5WorstRequests() RequestRateItemArr {
-	if len(rt.rates) == 0 {
+func (rt *RequestTracker) GetWorstRequests() RequestRateItemArr {
+	if rt.rates == nil {
 		return make(RequestRateItemArr, 0)
 	}
 
-	rt.mu.RLock()
-	defer rt.mu.RUnlock()
+	rt.ratesMtx.RLock()
+	defer rt.ratesMtx.RUnlock()
 
-	// sort, print top 5 and return worst request ID
 	allRates := make([]RequestRateItem, 0, len(rt.rates))
 
-	threshold := time.Now().Add(-5 * time.Second)
+	cutoff := time.Now().Add(-ttl)
 
 	for id, rate := range rt.rates {
-		// Skip expired entries (e.g., not accessed in the last hour)
-		if rate.lastAccess.Before(threshold) {
+		// Skip expired entries
+		// If more than 3 second stale, the request is likely done
+		if rate.lastUpdate.Before(cutoff) {
 			continue
 		}
 
@@ -128,26 +144,43 @@ func (rt *RequestTracker) GetTop5WorstRequests() RequestRateItemArr {
 		return allRates[i].Rate > allRates[j].Rate
 	})
 
-	length := min(len(allRates), len(rt.rates))
+	length := min(len(allRates), 3)
 
 	return allRates[:length]
 }
 
+type RequestRateItem struct {
+	ID   string
+	Rate float64
+}
+
+type RequestRateItemArr []RequestRateItem
+
+func (r RequestRateItemArr) String() string {
+	str := ""
+	for i, item := range r {
+		str += fmt.Sprintf("%s: %f", item.ID, item.Rate/1024/1024)
+		if i < len(r)-1 {
+			str += ", "
+		}
+	}
+	return str
+}
+
 type slidingWindowRate struct {
-	events     []ByteEvent
+	buckets    []int64 // One bucket per second
 	windowSize time.Duration
+	lastUpdate time.Time // Track last update time for bucket management
+	currentIdx int       // Current bucket index
 	mu         sync.Mutex
 }
 
-type ByteEvent struct {
-	timestamp time.Time
-	bytes     int64
-}
-
 func newSlidingWindowRate(windowSize time.Duration) *slidingWindowRate {
+	seconds := int(windowSize.Seconds())
 	return &slidingWindowRate{
-		events:     make([]ByteEvent, 0),
+		buckets:    make([]int64, seconds),
 		windowSize: windowSize,
+		lastUpdate: time.Now().Truncate(time.Second),
 	}
 }
 
@@ -155,51 +188,33 @@ func (swr *slidingWindowRate) addBytes(bytes int64) {
 	swr.mu.Lock()
 	defer swr.mu.Unlock()
 
-	now := time.Now()
+	now := time.Now().Truncate(time.Second)
 
-	// Remove old events
-	cutoff := now.Add(-swr.windowSize)
-	i := 0
-	for i < len(swr.events) && swr.events[i].timestamp.Before(cutoff) {
-		i++
-	}
-	if i > 0 {
-		swr.events = swr.events[i:]
+	// Calculate how many seconds have passed since last update
+	secondsDrift := int(now.Sub(swr.lastUpdate).Seconds())
+	if secondsDrift > 0 {
+		// Clear old buckets
+		for i := 0; i < min(secondsDrift, len(swr.buckets)); i++ {
+			nextIdx := (swr.currentIdx + i) % len(swr.buckets)
+			swr.buckets[nextIdx] = 0
+		}
+		// Update current index
+		swr.currentIdx = (swr.currentIdx + secondsDrift) % len(swr.buckets)
+		swr.lastUpdate = now
 	}
 
-	// Add new event
-	swr.events = append(swr.events, ByteEvent{
-		timestamp: now,
-		bytes:     bytes,
-	})
+	// Add bytes to current bucket
+	swr.buckets[swr.currentIdx] += bytes
 }
 
 func (swr *slidingWindowRate) getRate() float64 {
 	swr.mu.Lock()
 	defer swr.mu.Unlock()
 
-	now := time.Now()
-	cutoff := now.Add(-swr.windowSize)
-
 	var totalBytes int64
-	var oldestTimestamp, latestTimestamp time.Time
-
-	for i, event := range swr.events {
-		if event.timestamp.After(cutoff) {
-			totalBytes += event.bytes
-			if i == 0 || event.timestamp.Before(oldestTimestamp) {
-				oldestTimestamp = event.timestamp
-			}
-			latestTimestamp = event.timestamp
-		} else {
-			break
-		}
+	for _, bytes := range swr.buckets {
+		totalBytes += bytes
 	}
 
-	duration := latestTimestamp.Sub(oldestTimestamp).Seconds()
-	if duration == 0 {
-		return 0
-	}
-
-	return float64(totalBytes) / duration
+	return float64(totalBytes) / swr.windowSize.Seconds()
 }

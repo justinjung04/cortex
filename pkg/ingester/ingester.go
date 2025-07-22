@@ -38,13 +38,14 @@ import (
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/thanos/pkg/block/metadata"
 	"github.com/thanos-io/thanos/pkg/shipper"
-	storecache "github.com/thanos-io/thanos/pkg/store/cache"
-	"github.com/thanos-io/thanos/pkg/store/storepb"
 	"github.com/weaveworks/common/httpgrpc"
 	"github.com/weaveworks/common/user"
 	"go.uber.org/atomic"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc/codes"
+
+	storecache "github.com/thanos-io/thanos/pkg/store/cache"
+	"github.com/thanos-io/thanos/pkg/store/storepb"
 
 	"github.com/cortexproject/cortex/pkg/chunk/encoding"
 	"github.com/cortexproject/cortex/pkg/configs"
@@ -267,11 +268,7 @@ type Ingester struct {
 	matchersCache                storecache.MatchersCache
 	expandedPostingsCacheFactory *cortex_tsdb.ExpandedPostingsCacheFactory
 
-	requestTracker *util.RequestTracker
-
-	cancelMapMtx sync.RWMutex
-	cancelMap    map[string]context.CancelCauseFunc
-	shouldCancel bool
+	//requestTracker *util.RequestTracker
 }
 
 // Shipper interface is used to have an easy way to mock it in tests.
@@ -743,9 +740,7 @@ func New(cfg Config, limits *validation.Overrides, registerer prometheus.Registe
 		ingestionRate:                util_math.NewEWMARate(0.2, instanceIngestionRateTickInterval),
 		expandedPostingsCacheFactory: cortex_tsdb.NewExpandedPostingsCacheFactory(cfg.BlocksStorageConfig.TSDB.PostingsCache),
 		matchersCache:                storecache.NoopMatchersCache,
-		requestTracker:               util.NewRequestTracker(),
-		cancelMap:                    map[string]context.CancelCauseFunc{},
-		shouldCancel:                 false,
+		//requestTracker:               util.NewRequestTracker(),
 	}
 
 	if cfg.MatchersCacheMaxItems > 0 {
@@ -1010,14 +1005,8 @@ func (i *Ingester) updateLoop(ctx context.Context) error {
 	labelSetMetricsTicker := time.NewTicker(labelSetMetricsTickInterval)
 	defer labelSetMetricsTicker.Stop()
 
-	shouldCancelTicker := time.NewTicker(10 * time.Second)
-	defer shouldCancelTicker.Stop()
-
 	for {
 		select {
-		case <-shouldCancelTicker.C:
-			i.shouldCancel = !i.shouldCancel
-			level.Info(i.logger).Log("msg", "toggle shouldCancel", "shouldCancel", i.shouldCancel)
 		case <-metadataPurgeTicker.C:
 			i.purgeUserMetricsMetadata()
 		case <-ingestionRateTicker.C:
@@ -2233,11 +2222,11 @@ func (i *Ingester) QueryStream(req *client.QueryRequest, stream client.Ingester_
 	cortexQueryId := req.GetCortexQueryId()
 	ctx = context.WithValue(ctx, "X-Cortex-Query-ID", cortexQueryId)
 
-	var cancelCauseFunc context.CancelCauseFunc
-	ctx, cancelCauseFunc = context.WithCancelCause(ctx)
-	i.cancelMapMtx.Lock()
-	i.cancelMap[cortexQueryId] = cancelCauseFunc
-	i.cancelMapMtx.Unlock()
+	//var cancelCauseFunc context.CancelCauseFunc
+	//ctx, cancelCauseFunc = context.WithCancelCause(ctx)
+	//i.cancelMapMtx.Lock()
+	//i.cancelMap[cortexQueryId] = cancelCauseFunc
+	//i.cancelMapMtx.Unlock()
 
 	userID, err := tenant.TenantID(ctx)
 	if err != nil {
@@ -2299,12 +2288,12 @@ func (i *Ingester) trackInflightQueryRequest() (func(), error) {
 
 	i.maxInflightQueryRequests.Track(i.inflightQueryRequests.Inc())
 
-	if i.resourceBasedLimiter != nil {
-		if err := i.resourceBasedLimiter.AcceptNewRequest(); err != nil {
-			level.Warn(i.logger).Log("msg", "failed to accept request", "err", err)
-			return nil, httpgrpc.Errorf(http.StatusServiceUnavailable, "failed to query: %s", limiter.ErrResourceLimitReachedStr)
-		}
-	}
+	//if i.resourceBasedLimiter != nil {
+	//if err := i.resourceBasedLimiter.AcceptNewRequest(); err != nil {
+	//	level.Warn(i.logger).Log("msg", "failed to accept request", "err", err)
+	//	return nil, httpgrpc.Errorf(http.StatusServiceUnavailable, "failed to query: %s", limiter.ErrResourceLimitReachedStr)
+	//}
+	//}
 
 	//if i.resourceBasedEvictor != nil {
 	//	if err := i.resourceBasedEvictor.AcceptNewRequest(); err != nil {
@@ -2318,17 +2307,17 @@ func (i *Ingester) trackInflightQueryRequest() (func(), error) {
 	//	}
 	//}
 
-	if i.shouldCancel {
-		worstRequests := i.requestTracker.GetTop5WorstRequests()
-		if len(worstRequests) > 0 {
-			level.Warn(i.logger).Log("msg", "resource under pressure", "worst_requests", worstRequests.String())
-			id := worstRequests[0].ID
-			i.cancelMapMtx.RLock()
-			cancelFunc := i.cancelMap[id]
-			i.cancelMapMtx.RUnlock()
-			cancelFunc(level.Warn(i.logger).Log("msg", "query evicted", "request_id", id))
-		}
-	}
+	//if i.shouldCancel {
+	//	worstRequests := i.requestTracker.GetTop5WorstRequests()
+	//	if len(worstRequests) > 0 {
+	//		level.Warn(i.logger).Log("msg", "resource under pressure", "worst_requests", worstRequests.String())
+	//		id := worstRequests[0].ID
+	//		i.cancelMapMtx.RLock()
+	//		cancelFunc := i.cancelMap[id]
+	//		i.cancelMapMtx.RUnlock()
+	//		cancelFunc(level.Warn(i.logger).Log("msg", "query evicted", "request_id", id))
+	//	}
+	//}
 
 	return func() {
 		i.inflightQueryRequests.Dec()
@@ -2364,7 +2353,7 @@ func (i *Ingester) queryStreamChunks(ctx context.Context, db *userTSDB, from, th
 		return 0, 0, 0, 0, ss.Err()
 	}
 
-	cortexQueryId := ctx.Value("X-Cortex-Query-ID").(string)
+	//cortexQueryId := ctx.Value("X-Cortex-Query-ID").(string)
 	chunkSeries := getTimeSeriesChunksSlice()
 	defer putTimeSeriesChunksSlice(chunkSeries)
 	batchSizeBytes := 0
@@ -2381,7 +2370,7 @@ func (i *Ingester) queryStreamChunks(ctx context.Context, db *userTSDB, from, th
 			Labels: cortexpb.FromLabelsToLabelAdapters(series.Labels()),
 		}
 
-		i.requestTracker.TrackBytes(cortexQueryId, int64(ts.Size())) // TODO jungjust add series bytes
+		//i.requestTracker.TrackBytes(cortexQueryId, int64(ts.Size())) // TODO jungjust add series bytes
 
 		it := series.Iterator(it)
 		for it.Next() {
@@ -2414,7 +2403,7 @@ func (i *Ingester) queryStreamChunks(ctx context.Context, db *userTSDB, from, th
 			ts.Chunks = append(ts.Chunks, ch)
 			numChunks++
 			numSamples += meta.Chunk.NumSamples()
-			i.requestTracker.TrackBytes(cortexQueryId, int64(ch.Size())) // TODO jungjust add chunks bytes
+			//i.requestTracker.TrackBytes(cortexQueryId, int64(ch.Size())) // TODO jungjust add chunks bytes
 		}
 		numSeries++
 		tsSize := ts.Size()

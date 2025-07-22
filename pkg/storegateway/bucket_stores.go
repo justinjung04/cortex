@@ -25,13 +25,14 @@ import (
 	thanos_model "github.com/thanos-io/thanos/pkg/model"
 	"github.com/thanos-io/thanos/pkg/pool"
 	"github.com/thanos-io/thanos/pkg/store"
-	storecache "github.com/thanos-io/thanos/pkg/store/cache"
-	"github.com/thanos-io/thanos/pkg/store/storepb"
 	"github.com/weaveworks/common/httpgrpc"
 	"github.com/weaveworks/common/logging"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+
+	storecache "github.com/thanos-io/thanos/pkg/store/cache"
+	"github.com/thanos-io/thanos/pkg/store/storepb"
 
 	"github.com/cortexproject/cortex/pkg/storage/bucket"
 	"github.com/cortexproject/cortex/pkg/storage/tsdb"
@@ -82,6 +83,7 @@ type BucketStores struct {
 
 	userTokenBucketsMu sync.RWMutex
 	userTokenBuckets   map[string]*util.TokenBucket
+	requestTracker     *util.RequestTracker
 
 	userScanner users.Scanner
 
@@ -99,7 +101,7 @@ type BucketStores struct {
 var ErrTooManyInflightRequests = status.Error(codes.ResourceExhausted, "too many inflight requests in store gateway")
 
 // NewBucketStores makes a new BucketStores.
-func NewBucketStores(cfg tsdb.BlocksStorageConfig, shardingStrategy ShardingStrategy, bucketClient objstore.InstrumentedBucket, limits *validation.Overrides, logLevel logging.Level, logger log.Logger, reg prometheus.Registerer) (*BucketStores, error) {
+func NewBucketStores(cfg tsdb.BlocksStorageConfig, shardingStrategy ShardingStrategy, bucketClient objstore.InstrumentedBucket, limits *validation.Overrides, logLevel logging.Level, logger log.Logger, reg prometheus.Registerer, requestTracker *util.RequestTracker) (*BucketStores, error) {
 	matchers := tsdb.NewMatchers()
 	cachingBucket, err := tsdb.CreateCachingBucket(cfg.BucketStore.ChunksCache, cfg.BucketStore.MetadataCache, tsdb.ParquetLabelsCacheConfig{}, matchers, bucketClient, logger, reg)
 	if err != nil {
@@ -128,6 +130,7 @@ func NewBucketStores(cfg tsdb.BlocksStorageConfig, shardingStrategy ShardingStra
 		queryGate:          queryGate,
 		partitioner:        newGapBasedPartitioner(cfg.BucketStore.PartitionerMaxGapBytes, reg),
 		userTokenBuckets:   make(map[string]*util.TokenBucket),
+		requestTracker:     requestTracker,
 		syncTimes: promauto.With(reg).NewHistogram(prometheus.HistogramOpts{
 			Name:    "cortex_bucket_stores_blocks_sync_seconds",
 			Help:    "The total time it takes to perform a sync stores",
@@ -339,6 +342,14 @@ func (u *BucketStores) Series(req *storepb.SeriesRequest, srv storepb.Store_Seri
 		return fmt.Errorf("no userID")
 	}
 
+	spanCtx = context.WithValue(spanCtx, "X-Cortex-Query-ID", req.CortexQueryId)
+	var cancelCauseFunc context.CancelCauseFunc
+	spanCtx, cancelCauseFunc = context.WithCancelCause(spanCtx)
+	if req.CortexQueryId != "" {
+		u.requestTracker.AddRequest(req.CortexQueryId, cancelCauseFunc)
+		level.Warn(u.logger).Log("msg", "=========REQUEST ADDED========", "request_id", req.CortexQueryId)
+	}
+
 	err := u.getStoreError(userID)
 	userBkt := bucket.NewUserBucketClient(userID, u.bucket, u.limits)
 	if err != nil {
@@ -368,6 +379,8 @@ func (u *BucketStores) Series(req *storepb.SeriesRequest, srv storepb.Store_Seri
 		Store_SeriesServer: srv,
 		ctx:                spanCtx,
 	})
+
+	level.Warn(u.logger).Log("msg", "=========ALL REQUESTS========", "requests", u.requestTracker.GetWorstRequests().String())
 
 	return err
 }
@@ -691,6 +704,7 @@ func (u *BucketStores) getOrCreateStore(userID string) (*store.BucketStore, erro
 		true, // Enable series hints.
 		u.cfg.BucketStore.IndexHeaderLazyLoadingEnabled,
 		u.cfg.BucketStore.IndexHeaderLazyLoadingIdleTimeout,
+		u.requestTracker.TrackBytes,
 		bucketStoreOpts...,
 	)
 	if err != nil {

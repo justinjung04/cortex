@@ -219,6 +219,7 @@ func fetchLazyExpandedPostings(
 	lazyExpandedPostingSizeBytes prometheus.Counter,
 	lazyExpandedPostingGroupsByReason *prometheus.CounterVec,
 	tenant string,
+	trackBytes func(string, int64),
 ) (*lazyExpandedPostings, error) {
 	var (
 		err               error
@@ -251,7 +252,7 @@ func fetchLazyExpandedPostings(
 		}
 	}
 
-	ps, matchers, err := fetchAndExpandPostingGroups(ctx, r, postingGroups, bytesLimiter, tenant)
+	ps, matchers, err := fetchAndExpandPostingGroups(ctx, r, postingGroups, bytesLimiter, tenant, trackBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -294,9 +295,9 @@ func keysToFetchFromPostingGroups(postingGroups []*postingGroup) ([]labels.Label
 	return keys, lazyMatchers
 }
 
-func fetchAndExpandPostingGroups(ctx context.Context, r *bucketIndexReader, postingGroups []*postingGroup, bytesLimiter BytesLimiter, tenant string) ([]storage.SeriesRef, []*labels.Matcher, error) {
+func fetchAndExpandPostingGroups(ctx context.Context, r *bucketIndexReader, postingGroups []*postingGroup, bytesLimiter BytesLimiter, tenant string, trackBytes func(string, int64)) ([]storage.SeriesRef, []*labels.Matcher, error) {
 	keys, lazyMatchers := keysToFetchFromPostingGroups(postingGroups)
-	fetchedPostings, closeFns, err := r.fetchPostings(ctx, keys, bytesLimiter, tenant)
+	fetchedPostings, closeFns, err := r.fetchPostings(ctx, keys, bytesLimiter, tenant, trackBytes)
 	defer func() {
 		for _, closeFn := range closeFns {
 			closeFn()
